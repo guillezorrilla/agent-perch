@@ -3,9 +3,14 @@ import SwiftUI
 @MainActor
 final class NotchActions {
     var expandAction: () -> Void = {}
+    var hoverExpandAction: () -> Void = {}
     var collapseAction: () -> Void = {}
 
     func expand() { expandAction() }
+    /// Separate from `expand()` because a hover is not a decision: the compact view can
+    /// reappear under a cursor that never moved and fire `.onHover(true)` on its own, which
+    /// must not re-open a panel the user just dismissed.
+    func hoverExpand() { hoverExpandAction() }
     func collapse() { collapseAction() }
 }
 
@@ -36,9 +41,11 @@ struct NotchContentView: View {
                 .padding(16)
                 .frame(width: CGFloat(settings.panelWidth), alignment: .leading)
                 .background(Color.black)
-                .onHover { hovering in
-                    if !hovering { actions.collapse() }
-                }
+                // No `.onHover { if !hovering { collapse() } }` here, ever. This view is inset
+                // below the notch (DynamicNotchKit insets the expanded content by the notch
+                // height), so hovering the notch itself reads as "not hovering the content" —
+                // it collapsed the panel the hover poll had just opened, ~10 times a second.
+                // NotchHoverController owns closing; it tracks notch ∪ panel, not this rect.
                 .task {
                     usageProvider.showCached()
                     while !Task.isCancelled {
@@ -130,7 +137,7 @@ struct CompactLeadingView: View {
                 }
                 .contentShape(Rectangle())
                 .onTapGesture { actions.expand() }
-                .onHover { if $0 { actions.expand() } }
+                .onHover { if $0 { actions.hoverExpand() } }
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel("\(session.title), show Claude sessions")
             }
@@ -164,7 +171,7 @@ struct CompactTrailingView: View {
                     .background(Color.vibeBadge, in: RoundedRectangle(cornerRadius: 6))
                     .contentShape(Rectangle())
                     .onTapGesture { actions.expand() }
-                    .onHover { if $0 { actions.expand() } }
+                    .onHover { if $0 { actions.hoverExpand() } }
                     .accessibilityLabel("\(store.sessions.count) Claude sessions")
                     .accessibilityHint("Show session list")
             }
