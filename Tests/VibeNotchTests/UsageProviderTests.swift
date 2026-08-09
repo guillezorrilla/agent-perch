@@ -80,3 +80,49 @@ extension UsageProviderTests {
         XCTAssertEqual(snap.fiveHour.utilization, 5.0)
     }
 }
+
+extension UsageProviderTests {
+    private final class StubToken: UsageTokenSource {
+        func accessToken() -> String? { "tok" }
+    }
+    private final class StubLoader: UsageLoading {
+        var status: Int
+        var body: Data
+        private(set) var calls = 0
+        init(status: Int, body: Data) { self.status = status; self.body = body }
+        func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+            calls += 1
+            let resp = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!
+            return (body, resp)
+        }
+    }
+
+    @MainActor
+    func testKeepsLastGoodOnTransient429() async {
+        let good = """
+        {"five_hour":{"utilization":10,"resets_at":"2026-08-09T22:19:59.5Z"},
+         "seven_day":{"utilization":20,"resets_at":"2026-08-10T00:59:59.5Z"}}
+        """.data(using: .utf8)!
+        let loader = StubLoader(status: 200, body: good)
+        let provider = UsageProvider(tokenSource: StubToken(), loader: loader, minFetchInterval: 0)
+        await provider.refresh()
+        XCTAssertNotNil(provider.usage)
+        loader.status = 429; loader.body = Data("{}".utf8)
+        await provider.refresh()
+        XCTAssertNotNil(provider.usage, "429 must not blank the last good snapshot")
+    }
+
+    @MainActor
+    func testThrottleServesCacheWithoutHittingNetwork() async {
+        let good = """
+        {"five_hour":{"utilization":10,"resets_at":"2026-08-09T22:19:59Z"},
+         "seven_day":{"utilization":20,"resets_at":"2026-08-10T00:59:59Z"}}
+        """.data(using: .utf8)!
+        let loader = StubLoader(status: 200, body: good)
+        let provider = UsageProvider(tokenSource: StubToken(), loader: loader, minFetchInterval: 999)
+        await provider.refresh()
+        await provider.refresh()
+        await provider.refresh()
+        XCTAssertEqual(loader.calls, 1, "within the throttle window only the first call hits the network")
+    }
+}

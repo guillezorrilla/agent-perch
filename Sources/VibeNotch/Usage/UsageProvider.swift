@@ -103,15 +103,19 @@ struct RuntimeUsageTokenSource: UsageTokenSource {
 final class UsageProvider: ObservableObject {
     @Published private(set) var usage: UsageSnapshot?
     private var lastGood: UsageSnapshot?
+    private var lastFetchAt: Date?
     private let tokenSource: UsageTokenSource
     private let loader: UsageLoading
+    private let minFetchInterval: TimeInterval
 
     init(
         tokenSource: UsageTokenSource = RuntimeUsageTokenSource(),
-        loader: UsageLoading = URLSession.shared
+        loader: UsageLoading = URLSession.shared,
+        minFetchInterval: TimeInterval = 90
     ) {
         self.tokenSource = tokenSource
         self.loader = loader
+        self.minFetchInterval = minFetchInterval
     }
 
     func showCached() {
@@ -119,9 +123,19 @@ final class UsageProvider: ObservableObject {
     }
 
     func refresh() async {
+        // Hovering re-creates the panel and re-fires this on every expand; without a
+        // floor, rapid hovers hammer /oauth/usage into 429. Serve cache within the window.
+        if let last = lastFetchAt, Date().timeIntervalSince(last) < minFetchInterval {
+            usage = lastGood
+            return
+        }
+        lastFetchAt = Date()
+
         guard let token = tokenSource.accessToken(),
               let url = URL(string: "https://api.anthropic.com/api/oauth/usage") else {
+            // No token at all — nothing we can ever show.
             usage = nil
+            lastGood = nil
             return
         }
 
@@ -133,14 +147,16 @@ final class UsageProvider: ObservableObject {
             let (data, response) = try await loader.data(for: request)
             guard let response = response as? HTTPURLResponse,
                   200..<300 ~= response.statusCode else {
-                usage = nil
+                // Transient failure (429 rate-limit, 5xx, etc.) — keep the last good
+                // numbers on screen instead of blanking the strip.
+                usage = lastGood
                 return
             }
             let parsed = try UsageSnapshot.parse(data)
             lastGood = parsed
             usage = parsed
         } catch {
-            usage = nil
+            usage = lastGood
         }
     }
 }
