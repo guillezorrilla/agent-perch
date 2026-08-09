@@ -35,9 +35,16 @@ struct ScreenInfo: Equatable {
 // Poll-based hover with hysteresis, and the SINGLE owner of panel visibility while a display
 // mode is active. An NSTrackingArea on the bare notch rect thrashes: expanding the panel
 // downward moves the cursor out of the notch rect, firing exit -> collapse -> cursor back in
-// notch -> enter, forever. Here the "hot zone" is the notch UNION the visible panel area, and
-// collapse only fires after the cursor is truly outside it for `exitGrace`, so moving between
-// notch and panel never flickers.
+// notch -> enter, forever. Here the cursor counts as "inside" when it is in the notch/strip
+// rect on the selected screen OR DynamicNotchKit reports the cursor over the rendered panel
+// (`panelHovered`, from DNK's own `.onHover`). Collapse only fires after the cursor is truly
+// outside both for `exitGrace`, so moving between notch and panel never flickers.
+//
+// `panelHovered` replaces an earlier attempt that re-derived the panel's screen rect from a
+// GeometryReader and NSView.convertToScreen: that rect was wrong on an external display in the
+// floating (notchless) style — non-zero screen origin, floating window structure — so moving
+// into the visible panel read as "outside" and hid it. DNK's `.onHover` (DynamicNotch.isHovering)
+// needs no coordinates and is correct on any screen, in both the notch and floating styles.
 //
 // Everything else that wants the panel open or shut goes through this state machine too, so
 // there is exactly one answer to "should the panel be visible right now":
@@ -117,28 +124,27 @@ final class NotchHoverController {
         return .collapse
     }
 
+    /// The collapsed hot zone: the notch/strip rect clipped to its screen. The panel body no
+    /// longer contributes a re-derived rect here — DNK's own `isHovering` reports hover over the
+    /// rendered panel directly (see `isInside`), which is correct in any coordinate space, on
+    /// any screen, in both the notch and floating styles.
     nonisolated static func hotZone(
         notchRect: NSRect,
-        panelRect: NSRect?,
-        screenFrame: NSRect,
-        expanded: Bool
+        screenFrame: NSRect
     ) -> NSRect {
         guard !screenFrame.isEmpty, !notchRect.isEmpty else { return .zero }
-        let notchRect = notchRect.intersection(screenFrame)
-        guard !notchRect.isEmpty,
-              expanded,
-              let panelRect,
-              !panelRect.isEmpty,
-              panelRect.intersects(screenFrame) else { return notchRect }
-        return notchRect.union(panelRect.intersection(screenFrame))
+        return notchRect.intersection(screenFrame)
     }
 
-    nonisolated static func isInside(
+    /// Whether the cursor sits in the collapsed strip on the selected screen. This is the ENTER
+    /// path from the hidden state — DNK cannot report hover while the panel is hidden
+    /// (`updateHoverState` early-returns when `state == .hidden`, DynamicNotch.swift:159) — and
+    /// it also covers the physical notch top area, which DNK's content hover misses because the
+    /// expanded content is inset below the notch (NotchView.swift:148).
+    nonisolated static func stripContains(
         cursor: NSPoint,
         notchRect: NSRect,
-        panelRect: NSRect?,
-        screenFrame: NSRect,
-        expanded: Bool
+        screenFrame: NSRect
     ) -> Bool {
         // A cursor inside the physical notch is pinned to the screen's top edge and
         // reports y == maxY — which half-open NSRect.contains EXCLUDES. Nudge it in,
@@ -148,23 +154,33 @@ final class NotchHoverController {
             cursor.y = screenFrame.maxY - 0.5
         }
         guard screenFrame.contains(cursor) else { return false }
-        return hotZone(
-            notchRect: notchRect,
-            panelRect: panelRect,
-            screenFrame: screenFrame,
-            expanded: expanded
-        ).contains(cursor)
+        return hotZone(notchRect: notchRect, screenFrame: screenFrame).contains(cursor)
+    }
+
+    /// "Inside the hover region" for a poll tick: the cursor is in the strip on the selected
+    /// screen, OR DynamicNotchKit reports the cursor over the rendered panel (`panelHovered`).
+    /// The union is what makes clamshell/external-display hover correct: `panelHovered` comes
+    /// from SwiftUI `.onHover` on DNK's actual views, so it needs no coordinates and holds on a
+    /// non-zero-origin screen in the floating style, where re-deriving the panel rect was wrong.
+    nonisolated static func isInside(
+        cursor: NSPoint,
+        notchRect: NSRect,
+        screenFrame: NSRect,
+        panelHovered: Bool
+    ) -> Bool {
+        stripContains(cursor: cursor, notchRect: notchRect, screenFrame: screenFrame)
+            || panelHovered
     }
 
     private var timer: Timer?
     private var state = State()
-    private var cachedPanelRect: NSRect?
     private let exitGrace: TimeInterval
     private let pollInterval: TimeInterval
 
     private var notchRect: () -> NSRect = { .zero }
     private var screenFrame: () -> NSRect = { .zero }
-    private var panelRect: () -> NSRect? = { nil }
+    /// DynamicNotchKit's own hover truth (`DynamicNotch.isHovering`), read live each tick.
+    private var panelHovered: () -> Bool = { false }
     private var onEnter: () -> Bool = { false }
     private var onExit: () -> Void = {}
 
@@ -183,7 +199,7 @@ final class NotchHoverController {
     func start(
         notchRect: @escaping () -> NSRect,
         screenFrame: @escaping () -> NSRect,
-        panelRect: @escaping () -> NSRect?,
+        panelHovered: @escaping () -> Bool,
         onEnter: @escaping () -> Bool,
         onExit: @escaping () -> Void
     ) {
@@ -191,7 +207,7 @@ final class NotchHoverController {
         timer = nil
         self.notchRect = notchRect
         self.screenFrame = screenFrame
-        self.panelRect = panelRect
+        self.panelHovered = panelHovered
         self.onEnter = onEnter
         self.onExit = onExit
         let timer = Timer(timeInterval: pollInterval, repeats: true) { [weak self] _ in
@@ -205,27 +221,23 @@ final class NotchHoverController {
         timer?.invalidate()
         timer = nil
         state = State()
-        cachedPanelRect = nil
     }
 
     // Called when the panel closes for a reason other than hover, so the next hover starts
     // from a clean slate instead of thinking it's still expanded.
     func resetExpanded() {
         state.forgetExpansion()
-        cachedPanelRect = nil
     }
 
     // Called when the USER closed the panel (jump, permission decision, last session gone).
     func suppressUntilExit() {
         state.dismiss()
-        cachedPanelRect = nil
     }
 
     // Called when something other than hover opened the panel (needs-action alert, tap on the
     // compact view, a mode re-apply under the cursor).
     func adoptExternalExpansion() {
         state.adoptExternalExpansion()
-        cachedPanelRect = panelRect()
     }
 
     /// Whether a user dismissal is still latched — i.e. the cursor has not left since. Hover
@@ -233,29 +245,16 @@ final class NotchHoverController {
     var isSuppressed: Bool { state.suppressedUntilExit }
 
     /// Whether the cursor is over the notch or the open panel right now. Callers use this to
-    /// avoid yanking the panel out from under it on a timer or a mode re-apply.
+    /// avoid yanking the panel out from under it on a timer or a mode re-apply. `panelHovered`
+    /// only reports true while the panel is expanded (DNK ignores hover when hidden), so it
+    /// contributes nothing until there is a panel to be over.
     func isMouseInside() -> Bool {
-        refreshPanelRect()
-        return Self.isInside(
+        Self.isInside(
             cursor: NSEvent.mouseLocation,
             notchRect: notchRect(),
-            panelRect: state.expanded ? cachedPanelRect : nil,
             screenFrame: screenFrame(),
-            expanded: state.expanded
+            panelHovered: panelHovered()
         )
-    }
-
-    /// DynamicNotchKit tears its view tree down and rebuilds it on every screen-parameter
-    /// change (DynamicNotch.swift:144-153), so measured geometry is briefly unavailable while
-    /// the panel is on screen. Keep the last real rect through that transition.
-    private func refreshPanelRect() {
-        guard state.expanded else {
-            cachedPanelRect = nil
-            return
-        }
-        if let rect = panelRect(), !rect.isEmpty {
-            cachedPanelRect = rect
-        }
     }
 
     private func tick() {
@@ -266,7 +265,6 @@ final class NotchHoverController {
             // tick tries again instead of pretending the panel is open.
             if !onEnter() { state.expanded = false }
         case .collapse:
-            cachedPanelRect = nil
             onExit()
         case .none:
             break

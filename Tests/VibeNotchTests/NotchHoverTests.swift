@@ -65,48 +65,58 @@ final class NotchHoverTests: XCTestCase {
         XCTAssertEqual(ScreenInfo.selected(from: [external])?.id, 1)
     }
 
-    func testCursorOnOtherScreenIsOutsideNaiveCrossScreenUnion() {
-        let otherScreenPanel = NSRect(x: 1_200, y: 500, width: 300, height: 300)
-        let cursor = NSPoint(x: 1_300, y: 700)
+    func testInsideIsStripContainsOrPanelHovered() {
+        // The core of the fix: "inside" is the union of the strip poll and DNK's hover truth.
+        let cursorInStrip = NSPoint(x: 500, y: 785) // within notchRect
+        let cursorAway = NSPoint(x: 100, y: 400)     // nowhere near the strip
 
+        // Strip alone opens it — the ENTER path from hidden, where DNK can't report hover.
+        XCTAssertTrue(NotchHoverController.isInside(
+            cursor: cursorInStrip, notchRect: notchRect, screenFrame: screenFrame, panelHovered: false
+        ))
+        // DNK hover alone keeps it open, wherever the cursor is.
+        XCTAssertTrue(NotchHoverController.isInside(
+            cursor: cursorAway, notchRect: notchRect, screenFrame: screenFrame, panelHovered: true
+        ))
+        // Neither: outside.
         XCTAssertFalse(NotchHoverController.isInside(
-            cursor: cursor,
-            notchRect: notchRect,
-            panelRect: otherScreenPanel,
-            screenFrame: screenFrame,
-            expanded: true
+            cursor: cursorAway, notchRect: notchRect, screenFrame: screenFrame, panelHovered: false
         ))
     }
 
-    func testPanelOnOtherScreenIsNotUnioned() {
-        let otherScreenPanel = NSRect(x: 1_200, y: 500, width: 300, height: 300)
+    func testPanelHoverKeepsInsideOnNonZeroOriginScreen_theClamshellBug() {
+        // Clamshell: the external display's frame origin is not (0,0) and the floating panel
+        // lives in that space. The OLD rect-union math mis-mapped the panel and read the cursor
+        // as outside -> hide. DNK's `isHovering` needs no coordinates: panelHovered true keeps
+        // it inside no matter where the cursor sits or where the screen origin is.
+        let externalScreen = NSRect(x: 1_512, y: -240, width: 1_920, height: 1_080)
+        let externalNotch = NotchHoverController.notchFrame(
+            screenFrame: externalScreen,
+            menuBarHeight: 24,
+            auxiliaryTopLeft: nil, // no physical notch on an external display
+            auxiliaryTopRight: nil,
+            safeAreaTop: 0
+        )
+        let cursorInPanelBody = NSPoint(x: 2_400, y: 300) // deep in the panel, far from the strip
 
-        XCTAssertEqual(NotchHoverController.hotZone(
-            notchRect: notchRect,
-            panelRect: otherScreenPanel,
-            screenFrame: screenFrame,
-            expanded: true
-        ), notchRect)
-    }
-
-    func testEmptyPanelFrameIsNotUnioned() {
-        XCTAssertEqual(NotchHoverController.hotZone(
-            notchRect: notchRect,
-            panelRect: .zero,
-            screenFrame: screenFrame,
-            expanded: true
-        ), notchRect)
-    }
-
-    func testExpandedPanelOnSelectedScreenRemainsInHotZone() {
-        let panel = NSRect(x: 300, y: 500, width: 400, height: 300)
-
+        XCTAssertFalse(NotchHoverController.stripContains(
+            cursor: cursorInPanelBody, notchRect: externalNotch, screenFrame: externalScreen
+        ))
         XCTAssertTrue(NotchHoverController.isInside(
-            cursor: NSPoint(x: 350, y: 700),
+            cursor: cursorInPanelBody, notchRect: externalNotch, screenFrame: externalScreen, panelHovered: true
+        ))
+    }
+
+    func testCursorOnTheOtherScreenIsOutsideWhenPanelNotHovered() {
+        // Dual screen: the panel is on the selected (notch) screen; the cursor is on the other
+        // display and not over the panel, so DNK reports no hover -> outside.
+        let cursorOnOtherScreen = NSPoint(x: 1_300, y: 700) // x beyond screenFrame (width 1000)
+
+        XCTAssertFalse(NotchHoverController.isInside(
+            cursor: cursorOnOtherScreen,
             notchRect: notchRect,
-            panelRect: panel,
             screenFrame: screenFrame,
-            expanded: true
+            panelHovered: false
         ))
     }
 }
@@ -266,92 +276,15 @@ extension NotchHoverTests {
     private var notchScreen: NSRect { NSRect(x: 0, y: 0, width: 1_512, height: 982) }
     private var auxLeft: NSRect { NSRect(x: 0, y: 945, width: 631, height: 37) }
     private var auxRight: NSRect { NSRect(x: 881, y: 945, width: 631, height: 37) }
-    private var visiblePanel: NSRect { NSRect(x: 280, y: 550, width: 440, height: 220) }
-    private var smallPanel: NSRect { NSRect(x: 400, y: 620, width: 200, height: 150) }
-
-    func testCursorInsideOversizedWindowBelowVisiblePanelIsOutsideHotZone() {
-        XCTAssertFalse(NotchHoverController.isInside(
-            cursor: NSPoint(x: 500, y: 500),
-            notchRect: notchRect,
-            panelRect: visiblePanel,
-            screenFrame: screenFrame,
-            expanded: true
-        ))
-    }
-
-    func testCursorWithinCenteredPanelWidthBandIsInsideHotZone() {
-        XCTAssertTrue(NotchHoverController.isInside(
-            cursor: NSPoint(x: 500, y: 600),
-            notchRect: notchRect,
-            panelRect: visiblePanel,
-            screenFrame: screenFrame,
-            expanded: true
-        ))
-    }
-
-    func testLivePanelRectChangesTheHotZoneBand() {
-        let cursor = NSPoint(x: 150, y: 600)
-
-        XCTAssertFalse(NotchHoverController.isInside(
-            cursor: cursor,
-            notchRect: notchRect,
-            panelRect: visiblePanel,
-            screenFrame: screenFrame,
-            expanded: true
-        ))
-        XCTAssertTrue(NotchHoverController.isInside(
-            cursor: cursor,
-            notchRect: notchRect,
-            panelRect: NSRect(x: 100, y: 550, width: 800, height: 220),
-            screenFrame: screenFrame,
-            expanded: true
-        ))
-    }
 
     func testExpandedHotZoneStillIncludesNotchAtTopEdge() {
+        // With DNK reporting no hover, the strip alone still catches the cursor pinned to the
+        // physical notch at the very top edge.
         XCTAssertTrue(NotchHoverController.isInside(
             cursor: NSPoint(x: 500, y: 800),
             notchRect: notchRect,
-            panelRect: visiblePanel,
             screenFrame: screenFrame,
-            expanded: true
-        ))
-    }
-
-    func testCursorJustOutsideSmallRenderedPanelIsOutside() {
-        XCTAssertFalse(NotchHoverController.isInside(
-            cursor: NSPoint(x: 350, y: 700),
-            notchRect: notchRect,
-            panelRect: smallPanel,
-            screenFrame: screenFrame,
-            expanded: true
-        ))
-        XCTAssertFalse(NotchHoverController.isInside(
-            cursor: NSPoint(x: 500, y: 619),
-            notchRect: notchRect,
-            panelRect: smallPanel,
-            screenFrame: screenFrame,
-            expanded: true
-        ))
-    }
-
-    func testSmallRenderedPanelUnionsWithNotchAtSeam() {
-        XCTAssertEqual(smallPanel.maxY, notchRect.minY)
-        XCTAssertEqual(
-            NotchHoverController.hotZone(
-                notchRect: notchRect,
-                panelRect: smallPanel,
-                screenFrame: screenFrame,
-                expanded: true
-            ),
-            notchRect.union(smallPanel)
-        )
-        XCTAssertTrue(NotchHoverController.isInside(
-            cursor: NSPoint(x: 500, y: notchRect.minY),
-            notchRect: notchRect,
-            panelRect: smallPanel,
-            screenFrame: screenFrame,
-            expanded: true
+            panelHovered: false
         ))
     }
 
@@ -408,9 +341,7 @@ extension NotchHoverTests {
         XCTAssertEqual(
             NotchHoverController.hotZone(
                 notchRect: frame,
-                panelRect: nil,
-                screenFrame: notchScreen,
-                expanded: false
+                screenFrame: notchScreen
             ),
             frame
         )
@@ -423,17 +354,15 @@ extension NotchHoverTests {
         XCTAssertTrue(NotchHoverController.isInside(
             cursor: NSPoint(x: 500, y: 800),
             notchRect: NSRect(x: 450, y: 770, width: 100, height: 30),
-            panelRect: nil,
             screenFrame: NSRect(x: 0, y: 0, width: 1_000, height: 800),
-            expanded: false
+            panelHovered: false
         ))
         // But the top edge of a DIFFERENT screen's x-range stays outside.
         XCTAssertFalse(NotchHoverController.isInside(
             cursor: NSPoint(x: 1_500, y: 800),
             notchRect: NSRect(x: 450, y: 770, width: 100, height: 30),
-            panelRect: nil,
             screenFrame: NSRect(x: 0, y: 0, width: 1_000, height: 800),
-            expanded: false
+            panelHovered: false
         ))
     }
 }
