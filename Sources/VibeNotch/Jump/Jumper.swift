@@ -12,7 +12,26 @@ enum JumpRung: Equatable, Sendable {
 
 final class Jumper {
     private let resolver = TTYResolver()
+    private let terminalResolver = TerminalNameResolver()
     private let appleScript = AppleScriptRunner()
+
+    // Only iTerm2 and Terminal.app expose per-tab tty for exact focus. Anything else
+    // (Warp, Ghostty, …) can only be reopened at the cwd, so don't attempt focus there.
+    static func canExactFocus(_ terminal: String?) -> Bool {
+        switch terminal {
+        case nil, "iterm", "iterm2", "terminal", "terminal.app": return true
+        default: return false
+        }
+    }
+
+    // Reopen candidates, preferred terminal first so a session's own terminal wins.
+    static func openerOrder(preferring terminal: String?) -> [String] {
+        let defaults = ["iterm", "terminal", "warp"]
+        guard let terminal else { return defaults }
+        let key = terminal == "iterm2" ? "iterm" : (terminal == "terminal.app" ? "terminal" : terminal)
+        guard defaults.contains(key) else { return defaults }
+        return [key] + defaults.filter { $0 != key }
+    }
 
     static func rung(for cwd: String, processes: [ClaudeProcess]) -> JumpRung {
         rung(for: cwd, preferredTTY: nil, processes: processes)
@@ -35,15 +54,23 @@ final class Jumper {
     @MainActor
     @discardableResult
     func jump(_ session: AgentSession) -> Bool {
-        let rung = Self.rung(
-            for: session.cwd,
-            preferredTTY: session.tty,
-            processes: resolver.processes()
-        )
-        if case let .exactFocus(tty) = rung, focus(tty: tty) {
+        let processes = resolver.processes()
+        let match = processes.first {
+            TTYResolver.isClaudeCLI(command: $0.command)
+                && $0.cwd == session.cwd
+                && $0.tty?.isEmpty == false
+                && $0.tty != "??"
+        }
+        // Prefer the terminal the session actually runs in: hook-provided name, else
+        // resolve it by walking the live claude process's ancestry.
+        let terminal = (session.terminalName
+            ?? match.flatMap { terminalResolver.terminalName(for: $0.pid) })?.lowercased()
+
+        let tty = (session.tty?.isEmpty == false ? session.tty : nil) ?? match?.tty
+        if let tty, tty != "??", Self.canExactFocus(terminal), focus(tty: tty) {
             return true
         }
-        return openNewTab(at: session.cwd)
+        return openNewTab(at: session.cwd, preferring: terminal)
     }
 
     @MainActor
@@ -51,7 +78,7 @@ final class Jumper {
         let target = AppleScriptRunner.stringLiteral("/dev/\(tty)")
 
         if isInstalled("com.googlecode.iterm2"), appleScript.run("""
-            tell application "iTerm2"
+            tell application id "com.googlecode.iterm2"
                 repeat with aWindow in windows
                     repeat with aTab in tabs of aWindow
                         repeat with aSession in sessions of aTab
@@ -93,38 +120,50 @@ final class Jumper {
     }
 
     @MainActor
-    private func openNewTab(at cwd: String) -> Bool {
+    private func openNewTab(at cwd: String, preferring terminal: String?) -> Bool {
         let command = AppleScriptRunner.stringLiteral(
             "cd -- \(AppleScriptRunner.shellQuote(cwd)); exec \"${SHELL:-/bin/zsh}\" -l"
         )
 
-        if isInstalled("com.googlecode.iterm2"), appleScript.run("""
-            tell application "iTerm2"
-                create window with default profile command "\(command)"
-                activate
-            end tell
-            return true
-            """) {
-            return true
+        for opener in Self.openerOrder(preferring: terminal) {
+            switch opener {
+            case "iterm":
+                if isInstalled("com.googlecode.iterm2"), appleScript.run("""
+                    tell application id "com.googlecode.iterm2"
+                        create window with default profile command "\(command)"
+                        activate
+                    end tell
+                    return true
+                    """) {
+                    return true
+                }
+            case "terminal":
+                if isInstalled("com.apple.Terminal"), appleScript.run("""
+                    tell application "Terminal"
+                        do script "\(command)"
+                        activate
+                    end tell
+                    return true
+                    """) {
+                    return true
+                }
+            case "warp":
+                if isInstalled("dev.warp.Warp-Stable", "dev.warp.Warp") {
+                    var components = URLComponents()
+                    components.scheme = "warp"
+                    components.host = "action"
+                    components.path = "/new_tab"
+                    components.queryItems = [URLQueryItem(name: "path", value: cwd)]
+                    if let url = components.url {
+                        NSWorkspace.shared.open(url)
+                        return true
+                    }
+                }
+            default:
+                break
+            }
         }
-
-        if isInstalled("com.apple.Terminal"), appleScript.run("""
-            tell application "Terminal"
-                do script "\(command)"
-                activate
-            end tell
-            return true
-            """) {
-            return true
-        }
-
-        guard isInstalled("dev.warp.Warp-Stable", "dev.warp.Warp") else { return false }
-        var components = URLComponents()
-        components.scheme = "warp"
-        components.host = "action"
-        components.path = "/new_tab"
-        components.queryItems = [URLQueryItem(name: "path", value: cwd)]
-        return components.url.map(NSWorkspace.shared.open) ?? false
+        return false
     }
 
     @MainActor

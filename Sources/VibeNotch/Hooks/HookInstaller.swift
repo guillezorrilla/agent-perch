@@ -1,6 +1,7 @@
 import Foundation
 
 struct HookInstaller {
+    static let preToolUseMatcher = "Edit|MultiEdit|Write|Bash|NotebookEdit|ExitPlanMode"
     static let eventNames = [
         "SessionStart",
         "UserPromptSubmit",
@@ -32,7 +33,7 @@ struct HookInstaller {
                     ]]
                 ]
                 if eventName == "PreToolUse" {
-                    entry["matcher"] = "Edit|MultiEdit|Write|Bash|NotebookEdit"
+                    entry["matcher"] = Self.preToolUseMatcher
                 }
                 entries.append(entry)
                 hooks[eventName] = entries
@@ -134,7 +135,7 @@ struct HookInstaller {
         guard let entry = value as? [String: Any],
               let hooks = entry["hooks"] as? [Any] else { return false }
         if eventName == "PreToolUse" {
-            guard entry["matcher"] as? String == "Edit|MultiEdit|Write|Bash|NotebookEdit" else {
+            guard entry["matcher"] as? String == preToolUseMatcher else {
                 return false
             }
         } else if entry["matcher"] != nil {

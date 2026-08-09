@@ -6,39 +6,71 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
-            Picker("Display", selection: Binding(
-                get: { settings.displayMode },
-                set: { settings.displayMode = $0 }
-            )) {
-                ForEach(DisplayMode.allCases) { mode in
-                    Text(mode.label).tag(mode)
+            Section("Island") {
+                Picker("Display", selection: Binding(
+                    get: { settings.displayMode },
+                    set: { settings.displayMode = $0 }
+                )) {
+                    ForEach(DisplayMode.allCases) { mode in
+                        Text(mode.label).tag(mode)
+                    }
                 }
+                .pickerStyle(.segmented)
+
+                HStack {
+                    Text("Panel width")
+                    Slider(
+                        value: Binding(
+                            get: { settings.panelWidth },
+                            set: { settings.panelWidth = $0 }
+                        ),
+                        in: 440...800,
+                        step: 20
+                    )
+                    Text("\(Int(settings.panelWidth)) pt")
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                        .frame(width: 52, alignment: .trailing)
+                }
+
+                Picker("Needs-action dwell", selection: Binding(
+                    get: { settings.dwellTime },
+                    set: { settings.dwellTime = $0 }
+                )) {
+                    ForEach(NeedsActionDwellTime.allCases) { dwell in
+                        Text(dwell.label).tag(dwell)
+                    }
+                }
+                .pickerStyle(.segmented)
             }
-            .pickerStyle(.segmented)
 
-            Toggle("Launch at login", isOn: Binding(
-                get: { settings.launchAtLogin },
-                set: { settings.launchAtLogin = $0 }
-            ))
-            Toggle("Sounds", isOn: Binding(
-                get: { settings.soundsEnabled },
-                set: { settings.soundsEnabled = $0 }
-            ))
+            Section("General") {
+                Toggle("Launch at login", isOn: Binding(
+                    get: { settings.launchAtLogin },
+                    set: { settings.launchAtLogin = $0 }
+                ))
+                Toggle("Sounds", isOn: Binding(
+                    get: { settings.soundsEnabled },
+                    set: { settings.soundsEnabled = $0 }
+                ))
+            }
 
-            HStack {
-                Circle()
-                    .fill(settings.hooksInstalled ? Color.green : Color.gray)
-                    .frame(width: 8, height: 8)
-                Text(settings.hooksInstalled ? "Claude hooks installed" : "Claude hooks not installed")
-                Spacer()
-                Button(settings.hooksInstalled ? "Uninstall" : "Install") {
-                    try? settings.toggleHooks()
+            Section("Claude hooks") {
+                HStack {
+                    Circle()
+                        .fill(settings.hooksInstalled ? Color.green : Color.gray)
+                        .frame(width: 8, height: 8)
+                    Text(settings.hooksInstalled ? "Claude hooks installed" : "Claude hooks not installed")
+                    Spacer()
+                    Button(settings.hooksInstalled ? "Uninstall" : "Install") {
+                        try? settings.toggleHooks()
+                    }
                 }
             }
         }
         .formStyle(.grouped)
         .padding(12)
-        .frame(width: 430, height: 260)
+        .frame(width: 500, height: 390)
     }
 }
 
@@ -55,7 +87,7 @@ final class SettingsWindowController {
         settings.refreshHooksInstalled()
         if window == nil {
             let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 430, height: 260),
+                contentRect: NSRect(x: 0, y: 0, width: 500, height: 390),
                 styleMask: [.titled, .closable],
                 backing: .buffered,
                 defer: false

@@ -95,7 +95,7 @@ final class HookTests: XCTestCase {
             if eventName == "PreToolUse" {
                 XCTAssertEqual(
                     entries[0]["matcher"] as? String,
-                    "Edit|MultiEdit|Write|Bash|NotebookEdit"
+                    "Edit|MultiEdit|Write|Bash|NotebookEdit|ExitPlanMode"
                 )
             } else {
                 XCTAssertNil(entries[0]["matcher"])
@@ -131,6 +131,35 @@ final class HookTests: XCTestCase {
         let postToolUse = try XCTUnwrap(hooks["PostToolUse"] as? [[String: Any]])
         XCTAssertEqual(postToolUse.count, 1)
         XCTAssertEqual(command(in: postToolUse[0]), "/tmp/other")
+    }
+
+    func testInstallReplacesOldPreToolUseMatcher() throws {
+        let directory = temporaryDirectory()
+        let settingsURL = directory.appendingPathComponent("settings.json")
+        let binURL = directory.appendingPathComponent("bin/vibenotch-hook")
+        try writeJSON([
+            "hooks": [
+                "PreToolUse": [[
+                    "matcher": "Edit|MultiEdit|Write|Bash|NotebookEdit",
+                    "hooks": [[
+                        "type": "command",
+                        "command": "'\(binURL.path)' PreToolUse"
+                    ]]
+                ]]
+            ]
+        ], to: settingsURL)
+        let installer = HookInstaller(settingsURL: settingsURL)
+
+        XCTAssertFalse(installer.hasInstalledHooks(binURL: binURL))
+        XCTAssertTrue(try installer.install(binURL: binURL))
+
+        let hooks = try XCTUnwrap(try json(at: settingsURL)["hooks"] as? [String: Any])
+        let entries = try XCTUnwrap(hooks["PreToolUse"] as? [[String: Any]])
+        XCTAssertEqual(entries.count, 1)
+        XCTAssertEqual(
+            entries[0]["matcher"] as? String,
+            "Edit|MultiEdit|Write|Bash|NotebookEdit|ExitPlanMode"
+        )
     }
 
     func testUninstallRemovesOnlyVibeNotchEntries() throws {

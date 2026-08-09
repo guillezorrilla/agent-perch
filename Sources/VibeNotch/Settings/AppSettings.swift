@@ -19,11 +19,27 @@ enum DisplayMode: String, CaseIterable, Identifiable {
     }
 }
 
+enum NeedsActionDwellTime: Int, CaseIterable, Identifiable {
+    case off = 0
+    case threeSeconds = 3
+    case fiveSeconds = 5
+    case tenSeconds = 10
+
+    var id: Int { rawValue }
+    var seconds: Int? { self == .off ? nil : rawValue }
+
+    var label: String {
+        self == .off ? "Off" : "\(rawValue)s"
+    }
+}
+
 @MainActor
 final class AppSettings: ObservableObject {
     @AppStorage("displayMode") private var storedDisplayMode: DisplayMode = .hoverOnly
     @AppStorage("launchAtLogin") private var storedLaunchAtLogin = false
     @AppStorage("soundsEnabled") private var storedSoundsEnabled = true
+    @AppStorage("panelWidth") private var storedPanelWidth = 500.0
+    @AppStorage("needsActionDwellTime") private var storedDwellTime = NeedsActionDwellTime.fiveSeconds
     @Published private var installedHooks = false
 
     let applicationSupportDirectory: URL
@@ -62,6 +78,25 @@ final class AppSettings: ObservableObject {
             guard newValue != storedSoundsEnabled else { return }
             objectWillChange.send()
             storedSoundsEnabled = newValue
+        }
+    }
+
+    var panelWidth: Double {
+        get { min(800, max(440, storedPanelWidth)) }
+        set {
+            let value = min(800, max(440, newValue))
+            guard value != storedPanelWidth else { return }
+            objectWillChange.send()
+            storedPanelWidth = value
+        }
+    }
+
+    var dwellTime: NeedsActionDwellTime {
+        get { storedDwellTime }
+        set {
+            guard newValue != storedDwellTime else { return }
+            objectWillChange.send()
+            storedDwellTime = newValue
         }
     }
 

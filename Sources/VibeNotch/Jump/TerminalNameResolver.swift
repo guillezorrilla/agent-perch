@@ -47,7 +47,7 @@ final class TerminalNameResolver {
         let executable = URL(fileURLWithPath: command).lastPathComponent.lowercased()
         if lowercased.contains("iterm2") { return "iTerm" }
         if lowercased.contains("apple_terminal") || executable == "terminal" { return "Terminal" }
-        if lowercased.contains("warpterminal") { return "Warp" }
+        if lowercased.contains("warpterminal") || lowercased.contains("warp.app/") { return "Warp" }
         if lowercased.contains("tmux") && lowercased.contains("server") { return "tmux" }
         if lowercased.contains("ghostty") { return "Ghostty" }
         if lowercased.contains("wezterm") { return "WezTerm" }

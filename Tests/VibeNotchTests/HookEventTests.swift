@@ -30,6 +30,26 @@ final class HookEventTests: XCTestCase {
             ])
         )
     }
+
+    func testExtractsPlanMarkdownFromPreToolUseFixture() throws {
+        let event = try HookEvent.parse(Data(#"""
+        {
+            "event":"PreToolUse",
+            "tty":"ttys004",
+            "ts":1234,
+            "payload":{
+                "session_id":"session-1",
+                "tool_name":"ExitPlanMode",
+                "tool_input":{"plan":"# Ship it\n\n- Build\n- Verify"}
+            }
+        }
+        """#.utf8))
+
+        XCTAssertEqual(
+            PendingAction.parse(toolName: event.toolName, input: event.toolInput),
+            .plan("# Ship it\n\n- Build\n- Verify")
+        )
+    }
 }
 
 final class SessionTransitionTests: XCTestCase {
@@ -76,9 +96,21 @@ final class SessionTransitionTests: XCTestCase {
             store.sessions.first?.lastPrompt,
             "Please continue with the implementation"
         )
+        XCTAssertNil(store.sessions.first?.pendingToolName)
+        XCTAssertNil(store.sessions.first?.pendingToolInput)
+
+        try send(to: store,
+            "PreToolUse",
+            timestamp: 102,
+            fields: #", "tool_name":"Write""#
+        )
+        XCTAssertEqual(store.sessions.first?.pendingToolName, "Write")
+        XCTAssertNil(store.sessions.first?.pendingToolInput)
 
         try send(to: store, "Stop", timestamp: 103)
         XCTAssertEqual(store.sessions.first?.status, .done)
+        XCTAssertNil(store.sessions.first?.pendingToolName)
+        XCTAssertNil(store.sessions.first?.pendingToolInput)
 
         try send(to: store, "SessionEnd", timestamp: 104)
         XCTAssertEqual(store.sessions.first?.status, .ended)
