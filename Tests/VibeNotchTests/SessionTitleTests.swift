@@ -30,6 +30,71 @@ final class SessionTitleTests: XCTestCase {
         )
     }
 
+    func testNameBeatsSummary() throws {
+        let file = temporaryDirectory().appendingPathComponent("session.jsonl")
+        let lines = [
+            #"{"type":"custom-title","customTitle":"Named session"}"#,
+            #"{"type":"summary","summary":"Summary title"}"#
+        ]
+        try Data(lines.joined(separator: "\n").utf8).write(to: file)
+
+        XCTAssertEqual(
+            SessionTitle.resolve(
+                sessionFileURL: file,
+                lastPrompt: "Prompt title",
+                cwd: "/tmp/folder-name"
+            ),
+            "Named session"
+        )
+    }
+
+    func testMostRecentNameWinsByFilePosition() throws {
+        let file = temporaryDirectory().appendingPathComponent("session.jsonl")
+        let lines = [
+            #"{"type":"custom-title","customTitle":"Older custom title"}"#,
+            #"{"type":"agent-name","agentName":"Newer agent name"}"#
+        ]
+        try Data(lines.joined(separator: "\n").utf8).write(to: file)
+
+        XCTAssertEqual(
+            SessionTitle.resolve(
+                sessionFileURL: file,
+                lastPrompt: nil,
+                cwd: "/tmp/folder-name"
+            ),
+            "Newer agent name"
+        )
+    }
+
+    func testCustomTitleBeatsAgentNameAtEqualPosition() {
+        let customTitle = SessionTitle.LocatedValue(value: "Custom title", position: 42)
+        let agentName = SessionTitle.LocatedValue(value: "Agent name", position: 42)
+
+        XCTAssertEqual(
+            SessionTitle.preferredName(customTitle: customTitle, agentName: agentName),
+            "Custom title"
+        )
+    }
+
+    func testNameIsFoundInHeadWindowOfLargeFile() throws {
+        let file = temporaryDirectory().appendingPathComponent("session.jsonl")
+        let lines = [
+            #"{"type":"agent-name","agentName":"Head name"}"#,
+            #"{"type":"user","message":"\#(String(repeating: "x", count: 70_000))"}"#,
+            #"{"type":"summary","summary":"Tail summary"}"#
+        ]
+        try Data(lines.joined(separator: "\n").utf8).write(to: file)
+
+        XCTAssertEqual(
+            SessionTitle.resolve(
+                sessionFileURL: file,
+                lastPrompt: nil,
+                cwd: "/tmp/folder-name"
+            ),
+            "Head name"
+        )
+    }
+
     func testPromptIsUsedAndLimitedToFortyCharactersWithoutSummary() throws {
         let prompt = "1234567890123456789012345678901234567890extra"
         XCTAssertEqual(
