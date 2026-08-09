@@ -63,3 +63,23 @@ final class SessionTitleTests: XCTestCase {
         return url
     }
 }
+
+extension SessionTitleTests {
+    func testMachinePromptsAreNotDisplayable() {
+        XCTAssertNil(SessionTitle.displayablePrompt("<task-notification>\n<task-id>x</task-id>"))
+        XCTAssertNil(SessionTitle.displayablePrompt("<system-reminder>stuff</system-reminder>"))
+        XCTAssertNil(SessionTitle.displayablePrompt("<command-name>/model</command-name>"))
+        XCTAssertNil(SessionTitle.displayablePrompt("[SYSTEM NOTIFICATION - NOT USER INPUT] x"))
+        XCTAssertNil(SessionTitle.displayablePrompt("   "))
+        XCTAssertNil(SessionTitle.displayablePrompt(nil))
+    }
+
+    func testRealPromptsPassThrough() {
+        XCTAssertEqual(SessionTitle.displayablePrompt("fix the auth bug"), "fix the auth bug")
+    }
+
+    func testPromptAfterLeadingWrapperBlockIsExtracted() {
+        let wrapped = "<local-command-caveat>ignore</local-command-caveat>\nplease fix hover"
+        XCTAssertEqual(SessionTitle.displayablePrompt(wrapped), "please fix hover")
+    }
+}
