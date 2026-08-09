@@ -46,6 +46,11 @@ enum JSONValue: Codable, Equatable, Sendable {
         guard case let .string(value) = self else { return nil }
         return value
     }
+
+    var object: [String: JSONValue]? {
+        guard case let .object(value) = self else { return nil }
+        return value
+    }
 }
 
 struct HookEvent: Codable, Equatable, Sendable {
@@ -64,5 +69,49 @@ struct HookEvent: Codable, Equatable, Sendable {
 
     static func parse(_ data: Data) throws -> HookEvent {
         try JSONDecoder().decode(HookEvent.self, from: data)
+    }
+}
+
+enum ActivityLine {
+    static func describe(toolName: String?, toolInput: JSONValue?) -> String? {
+        guard let toolName else { return nil }
+
+        switch toolName {
+        case "Edit", "MultiEdit", "Write", "NotebookEdit":
+            guard let path = field("file_path", in: toolInput) else { return nil }
+            return "Writing \(URL(fileURLWithPath: path).lastPathComponent)"
+        case "Read":
+            guard let path = field("file_path", in: toolInput) else { return nil }
+            return "Reading \(URL(fileURLWithPath: path).lastPathComponent)"
+        case "Bash":
+            guard let command = field("command", in: toolInput) else { return nil }
+            let singleLine = command.split(whereSeparator: { $0.isNewline }).joined(separator: " ")
+            guard !singleLine.isEmpty else { return nil }
+            return "Running \(singleLine.prefix(40))"
+        case "Grep", "Glob":
+            guard let query = field("pattern", in: toolInput) ?? field("path", in: toolInput) else {
+                return nil
+            }
+            return "Searching \(query)"
+        case "WebFetch":
+            guard let url = field("url", in: toolInput),
+                  let host = URLComponents(string: url)?.host else { return nil }
+            return "Fetching \(host)"
+        case "WebSearch":
+            return "Searching the web"
+        case "TodoWrite":
+            return "Updating the plan"
+        case "Task":
+            return "Delegating a subtask"
+        case "ExitPlanMode":
+            return "Awaiting plan approval"
+        default:
+            return nil
+        }
+    }
+
+    private static func field(_ name: String, in input: JSONValue?) -> String? {
+        guard let value = input?.object?[name]?.string, !value.isEmpty else { return nil }
+        return value
     }
 }

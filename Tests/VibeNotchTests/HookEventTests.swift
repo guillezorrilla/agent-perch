@@ -52,6 +52,80 @@ final class HookEventTests: XCTestCase {
     }
 }
 
+final class ActivityLineTests: XCTestCase {
+    func testDescribesFileToolsWithBasename() {
+        let input = JSONValue.object(["file_path": .string("/repo/Sources/App.swift")])
+
+        for tool in ["Edit", "MultiEdit", "Write", "NotebookEdit"] {
+            XCTAssertEqual(ActivityLine.describe(toolName: tool, toolInput: input), "Writing App.swift")
+        }
+        XCTAssertEqual(ActivityLine.describe(toolName: "Read", toolInput: input), "Reading App.swift")
+    }
+
+    func testDescribesBashWithSingleLineTruncatedCommand() {
+        let command = "swift test\n--filter ActivityLineTests and-more-text"
+
+        XCTAssertEqual(
+            ActivityLine.describe(
+                toolName: "Bash",
+                toolInput: .object(["command": .string(command)])
+            ),
+            "Running swift test --filter ActivityLineTests an"
+        )
+    }
+
+    func testDescribesSearchTools() {
+        XCTAssertEqual(
+            ActivityLine.describe(
+                toolName: "Grep",
+                toolInput: .object(["pattern": .string("currentActivity")])
+            ),
+            "Searching currentActivity"
+        )
+        XCTAssertEqual(
+            ActivityLine.describe(
+                toolName: "Glob",
+                toolInput: .object(["path": .string("Sources/VibeNotch")])
+            ),
+            "Searching Sources/VibeNotch"
+        )
+    }
+
+    func testDescribesWebTools() {
+        XCTAssertEqual(
+            ActivityLine.describe(
+                toolName: "WebFetch",
+                toolInput: .object(["url": .string("https://docs.swift.org/swift-book")])
+            ),
+            "Fetching docs.swift.org"
+        )
+        XCTAssertEqual(
+            ActivityLine.describe(toolName: "WebSearch", toolInput: nil),
+            "Searching the web"
+        )
+    }
+
+    func testDescribesWorkflowTools() {
+        XCTAssertEqual(
+            ActivityLine.describe(toolName: "TodoWrite", toolInput: nil),
+            "Updating the plan"
+        )
+        XCTAssertEqual(
+            ActivityLine.describe(toolName: "Task", toolInput: nil),
+            "Delegating a subtask"
+        )
+        XCTAssertEqual(
+            ActivityLine.describe(toolName: "ExitPlanMode", toolInput: nil),
+            "Awaiting plan approval"
+        )
+    }
+
+    func testReturnsNilForUnknownOrMissingTools() {
+        XCTAssertNil(ActivityLine.describe(toolName: "CustomTool", toolInput: .object([:])))
+        XCTAssertNil(ActivityLine.describe(toolName: nil, toolInput: nil))
+    }
+}
+
 final class SessionTransitionTests: XCTestCase {
     private var temporaryDirectories: [URL] = []
 
@@ -73,12 +147,14 @@ final class SessionTransitionTests: XCTestCase {
             timestamp: 100,
             fields: #", "tool_name":"Bash", "tool_input":{"command":"make app"}"#
         )
+        XCTAssertEqual(store.sessions.first?.currentActivity, "Running make app")
         try send(to: store,
             "Notification",
             timestamp: 101,
             fields: #", "message":"Approve Bash?""#
         )
         XCTAssertEqual(store.sessions.first?.status, .needsAction)
+        XCTAssertNil(store.sessions.first?.currentActivity)
         XCTAssertEqual(store.sessions.first?.notificationMessage, "Approve Bash?")
         XCTAssertEqual(store.sessions.first?.pendingToolName, "Bash")
         XCTAssertEqual(
@@ -102,18 +178,20 @@ final class SessionTransitionTests: XCTestCase {
         try send(to: store,
             "PreToolUse",
             timestamp: 102,
-            fields: #", "tool_name":"Write""#
+            fields: #", "tool_name":"Write", "tool_input":{"file_path":"/tmp/repo/App.swift"}"#
         )
         XCTAssertEqual(store.sessions.first?.pendingToolName, "Write")
-        XCTAssertNil(store.sessions.first?.pendingToolInput)
+        XCTAssertEqual(store.sessions.first?.currentActivity, "Writing App.swift")
 
         try send(to: store, "Stop", timestamp: 103)
         XCTAssertEqual(store.sessions.first?.status, .done)
+        XCTAssertNil(store.sessions.first?.currentActivity)
         XCTAssertNil(store.sessions.first?.pendingToolName)
         XCTAssertNil(store.sessions.first?.pendingToolInput)
 
         try send(to: store, "SessionEnd", timestamp: 104)
         XCTAssertEqual(store.sessions.first?.status, .ended)
+        XCTAssertNil(store.sessions.first?.currentActivity)
         store.removeEndedSessions(now: Date(timeIntervalSince1970: 133))
         XCTAssertEqual(store.sessions.count, 1)
         store.removeEndedSessions(now: Date(timeIntervalSince1970: 134))

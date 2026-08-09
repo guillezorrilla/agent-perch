@@ -93,6 +93,7 @@ final class SessionStore: ObservableObject {
             status: .working,
             lastPrompt: nil,
             tty: nil,
+            currentActivity: nil,
             notificationMessage: nil,
             pendingToolName: nil,
             pendingToolInput: nil
@@ -116,19 +117,26 @@ final class SessionStore: ObservableObject {
             state.pendingToolInput = nil
         case "PreToolUse":
             state.status = .working
+            state.currentActivity = ActivityLine.describe(
+                toolName: event.toolName,
+                toolInput: event.toolInput
+            )
             state.pendingToolName = event.toolName
             state.pendingToolInput = event.toolInput
             state.notificationMessage = nil
         case "Notification":
             state.status = .needsAction
+            state.currentActivity = nil
             state.notificationMessage = event.message
         case "Stop":
             state.status = .done
+            state.currentActivity = nil
             state.notificationMessage = nil
             state.pendingToolName = nil
             state.pendingToolInput = nil
         case "SessionEnd":
             state.status = .ended
+            state.currentActivity = nil
             state.notificationMessage = nil
             state.pendingToolName = nil
             state.pendingToolInput = nil
@@ -200,6 +208,7 @@ final class SessionStore: ObservableObject {
                 lastPrompt: hook?.lastPrompt,
                 tty: tty,
                 terminalName: process.map { terminalResolver.terminalName(for: $0.pid) } ?? nil,
+                currentActivity: hookWins ? hook?.currentActivity : nil,
                 notificationMessage: hook?.notificationMessage,
                 pendingToolName: hook?.pendingToolName,
                 pendingToolInput: hook?.pendingToolInput
@@ -229,6 +238,7 @@ final class SessionStore: ObservableObject {
         var status: SessionStatus
         var lastPrompt: String?
         var tty: String?
+        var currentActivity: String?
         var notificationMessage: String?
         var pendingToolName: String?
         var pendingToolInput: JSONValue?
