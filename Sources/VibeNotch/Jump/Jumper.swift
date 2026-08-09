@@ -66,7 +66,11 @@ final class Jumper {
         let terminal = (session.terminalName
             ?? match.flatMap { terminalResolver.terminalName(for: $0.pid) })?.lowercased()
 
-        let tty = (session.tty?.isEmpty == false ? session.tty : nil) ?? match?.tty
+        // Hook tty, else live claude tty, else any shell still sitting at the cwd —
+        // the user's open tab after the agent exited (#10).
+        let tty = (session.tty?.isEmpty == false ? session.tty : nil)
+            ?? match?.tty
+            ?? resolver.shellTTY(at: session.cwd)
         if let tty, tty != "??", Self.canExactFocus(terminal), focus(tty: tty) {
             return true
         }
@@ -119,18 +123,27 @@ final class Jumper {
         return false
     }
 
+    // iTerm's `command` parameter execs WITHOUT a shell — `cd x; exec y` word-splits and
+    // dies (#10). Wrap it in an explicit shell; Terminal.app's `do script` already types
+    // into a shell, so it takes the inner command as-is.
+    static func newTabShellCommand(cwd: String) -> String {
+        let inner = "cd -- \(AppleScriptRunner.shellQuote(cwd)); exec \"${SHELL:-/bin/zsh}\" -l"
+        return "/bin/zsh -lc \(AppleScriptRunner.shellQuote(inner))"
+    }
+
     @MainActor
     private func openNewTab(at cwd: String, preferring terminal: String?) -> Bool {
         let command = AppleScriptRunner.stringLiteral(
             "cd -- \(AppleScriptRunner.shellQuote(cwd)); exec \"${SHELL:-/bin/zsh}\" -l"
         )
+        let shellWrapped = AppleScriptRunner.stringLiteral(Self.newTabShellCommand(cwd: cwd))
 
         for opener in Self.openerOrder(preferring: terminal) {
             switch opener {
             case "iterm":
                 if isInstalled("com.googlecode.iterm2"), appleScript.run("""
                     tell application id "com.googlecode.iterm2"
-                        create window with default profile command "\(command)"
+                        create window with default profile command "\(shellWrapped)"
                         activate
                     end tell
                     return true

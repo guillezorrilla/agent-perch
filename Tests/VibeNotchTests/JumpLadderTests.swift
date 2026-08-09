@@ -75,4 +75,20 @@ final class JumpLadderTests: XCTestCase {
         XCTAssertFalse(Jumper.canExactFocus("warp"))
         XCTAssertFalse(Jumper.canExactFocus("ghostty"))
     }
+
+    func testNewTabCommandIsShellWrappedForITerm() {
+        let command = Jumper.newTabShellCommand(cwd: "/Users/me/My Repo's")
+        // Must be a single shell invocation: iTerm execs this without a shell (#10).
+        XCTAssertTrue(command.hasPrefix("/bin/zsh -lc '"))
+        // The inner command (with the `;`) is inside the quoted argument, never bare.
+        XCTAssertTrue(command.contains("cd -- "))
+        XCTAssertTrue(command.contains("My Repo"))
+        XCTAssertFalse(command.hasSuffix(";"))
+    }
+
+    func testShellAtCwdParsedFromLsofFieldOutput() {
+        let listing = "p101\nn/Users/me/other\np202\nn/Users/me/project\np303\nn/tmp\n"
+        XCTAssertEqual(TTYResolver.firstPid(withCwd: "/Users/me/project", inLsofFieldOutput: listing), 202)
+        XCTAssertNil(TTYResolver.firstPid(withCwd: "/nope", inLsofFieldOutput: listing))
+    }
 }
