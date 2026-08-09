@@ -76,6 +76,62 @@ final class JumpLadderTests: XCTestCase {
         XCTAssertFalse(Jumper.canExactFocus("ghostty"))
     }
 
+    func testWarpRoutingFocusesBeforeFallbackAndFallsBackOnMissOrFailure() {
+        var calls: [String] = []
+        XCTAssertTrue(Jumper.routeWarpJump(
+            cwd: "/repo",
+            locate: {
+                calls.append("locate:\($0)")
+                return 4
+            },
+            focus: {
+                calls.append("focus:\($0)")
+                return true
+            },
+            fallback: {
+                calls.append("fallback")
+                return false
+            }
+        ))
+        XCTAssertEqual(calls, ["locate:/repo", "focus:4"])
+
+        calls = []
+        XCTAssertTrue(Jumper.routeWarpJump(
+            cwd: "/repo",
+            locate: { _ in
+                calls.append("locate")
+                return nil
+            },
+            focus: { _ in
+                calls.append("focus")
+                return true
+            },
+            fallback: {
+                calls.append("fallback")
+                return true
+            }
+        ))
+        XCTAssertEqual(calls, ["locate", "fallback"])
+
+        calls = []
+        XCTAssertTrue(Jumper.routeWarpJump(
+            cwd: "/repo",
+            locate: { _ in
+                calls.append("locate")
+                return 4
+            },
+            focus: { _ in
+                calls.append("focus")
+                return false
+            },
+            fallback: {
+                calls.append("fallback")
+                return true
+            }
+        ))
+        XCTAssertEqual(calls, ["locate", "focus", "fallback"])
+    }
+
     func testNewTabCommandIsShellWrappedForITerm() {
         let command = Jumper.newTabShellCommand(cwd: "/Users/me/My Repo's")
         // Must be a single shell invocation: iTerm execs this without a shell (#10).
