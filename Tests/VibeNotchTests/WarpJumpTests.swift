@@ -4,23 +4,78 @@ import XCTest
 @testable import VibeNotch
 
 final class WarpTabLocatorTests: XCTestCase {
-    func testFixtureDatabaseFindsFocusedMatchingTabAndReturnsNilForMiss() throws {
+    func testFixtureDatabaseCountsNonTerminalTabBeforeTarget() throws {
         try withFixtureDatabase { databaseURL, database in
+            try createFixtureSchema(in: database)
             try execute("""
-                CREATE TABLE terminal_panes (id INTEGER PRIMARY KEY, cwd TEXT NOT NULL);
-                CREATE TABLE pane_leaves (pane_node_id INTEGER NOT NULL, is_focused INTEGER);
-                CREATE TABLE pane_nodes (id INTEGER PRIMARY KEY, tab_id INTEGER NOT NULL);
-                CREATE TABLE tabs (id INTEGER PRIMARY KEY, window_id INTEGER NOT NULL);
                 INSERT INTO tabs VALUES (10, 1), (20, 1), (30, 1);
-                INSERT INTO pane_nodes VALUES (100, 10), (200, 20), (300, 30);
-                INSERT INTO terminal_panes VALUES
-                    (100, '/other'), (200, '/repo'), (300, '/repo');
-                INSERT INTO pane_leaves VALUES (100, 0), (200, 0), (300, 1);
+                INSERT INTO pane_nodes VALUES (100, 10), (300, 30);
+                INSERT INTO terminal_panes VALUES (100, '/other'), (300, '/repo');
+                INSERT INTO pane_leaves VALUES
+                    (100, 'terminal', 0), (300, 'terminal', 1);
                 """, in: database)
 
-            let locator = WarpTabLocator(databaseURL: databaseURL)
-            XCTAssertEqual(locator.tabIndex(forCwd: "/repo"), 3)
-            XCTAssertNil(locator.tabIndex(forCwd: "/missing"))
+            XCTAssertEqual(WarpTabLocator(databaseURL: databaseURL).tabIndex(forCwd: "/repo"), 3)
+        }
+    }
+
+    func testFixtureDatabasePrefersFocusedCwdMatchAcrossWindows() throws {
+        try withFixtureDatabase { databaseURL, database in
+            try createFixtureSchema(in: database)
+            try execute("""
+                INSERT INTO tabs VALUES (10, 1), (30, 2), (40, 2);
+                INSERT INTO pane_nodes VALUES (100, 10), (400, 40);
+                INSERT INTO terminal_panes VALUES (100, '/repo'), (400, '/repo');
+                INSERT INTO pane_leaves VALUES
+                    (100, 'terminal', 0), (400, 'terminal', 1);
+                """, in: database)
+
+            XCTAssertEqual(WarpTabLocator(databaseURL: databaseURL).tabIndex(forCwd: "/repo"), 2)
+        }
+    }
+
+    func testFixtureDatabaseUsesMostRecentCwdMatchWhenNoneIsFocused() throws {
+        try withFixtureDatabase { databaseURL, database in
+            try createFixtureSchema(in: database)
+            try execute("""
+                INSERT INTO tabs VALUES (10, 1), (100, 2), (110, 2);
+                INSERT INTO pane_nodes VALUES (1000, 10), (1100, 110);
+                INSERT INTO terminal_panes VALUES (1000, '/repo'), (1100, '/repo');
+                INSERT INTO pane_leaves VALUES
+                    (1000, 'terminal', 0), (1100, 'terminal', 0);
+                """, in: database)
+
+            XCTAssertEqual(WarpTabLocator(databaseURL: databaseURL).tabIndex(forCwd: "/repo"), 2)
+        }
+    }
+
+    func testFixtureDatabaseReturnsNilForTabIndexAboveNine() throws {
+        try withFixtureDatabase { databaseURL, database in
+            try createFixtureSchema(in: database)
+            try execute("""
+                INSERT INTO tabs VALUES
+                    (1, 1), (2, 1), (3, 1), (4, 1), (5, 1),
+                    (6, 1), (7, 1), (8, 1), (9, 1), (10, 1);
+                INSERT INTO pane_nodes VALUES (100, 10);
+                INSERT INTO terminal_panes VALUES (100, '/repo');
+                INSERT INTO pane_leaves VALUES (100, 'terminal', 1);
+                """, in: database)
+
+            XCTAssertNil(WarpTabLocator(databaseURL: databaseURL).tabIndex(forCwd: "/repo"))
+        }
+    }
+
+    func testFixtureDatabaseReturnsNilForMissingCwd() throws {
+        try withFixtureDatabase { databaseURL, database in
+            try createFixtureSchema(in: database)
+            try execute("""
+                INSERT INTO tabs VALUES (10, 1);
+                INSERT INTO pane_nodes VALUES (100, 10);
+                INSERT INTO terminal_panes VALUES (100, '/other');
+                INSERT INTO pane_leaves VALUES (100, 'terminal', 1);
+                """, in: database)
+
+            XCTAssertNil(WarpTabLocator(databaseURL: databaseURL).tabIndex(forCwd: "/missing"))
         }
     }
 
@@ -37,30 +92,17 @@ final class WarpTabLocatorTests: XCTestCase {
         }
     }
 
-    func testPureRowMappingUsesFirstWindowAndFocusedMatchingPane() {
-        let rows = [
-            WarpTabRow(windowID: 2, tabID: 40, cwd: "/repo", isFocused: true),
-            WarpTabRow(windowID: 1, tabID: 30, cwd: "/repo", isFocused: true),
-            WarpTabRow(windowID: 1, tabID: 10, cwd: "/other", isFocused: false),
-            WarpTabRow(windowID: 1, tabID: 20, cwd: "/repo", isFocused: false)
-        ]
-
-        XCTAssertEqual(WarpTabLocator.tabIndex(forCwd: "/repo", rows: rows), 3)
-        XCTAssertNil(WarpTabLocator.tabIndex(forCwd: "/missing", rows: rows))
-        XCTAssertEqual(
-            WarpTabLocator.tabIndex(
-                forCwd: "/repo",
-                rows: rows.map {
-                    WarpTabRow(
-                        windowID: $0.windowID,
-                        tabID: $0.tabID,
-                        cwd: $0.cwd,
-                        isFocused: nil
-                    )
-                }
-            ),
-            2
-        )
+    private func createFixtureSchema(in database: OpaquePointer) throws {
+        try execute("""
+            CREATE TABLE terminal_panes (id INTEGER PRIMARY KEY, cwd TEXT NOT NULL);
+            CREATE TABLE pane_leaves (
+                pane_node_id INTEGER NOT NULL,
+                kind TEXT NOT NULL,
+                is_focused INTEGER
+            );
+            CREATE TABLE pane_nodes (id INTEGER PRIMARY KEY, tab_id INTEGER NOT NULL);
+            CREATE TABLE tabs (id INTEGER PRIMARY KEY, window_id INTEGER NOT NULL);
+            """, in: database)
     }
 
     private func withFixtureDatabase(
