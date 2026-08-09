@@ -166,11 +166,19 @@ private struct RawUsageWindow: Decodable {
 
     var value: UsageWindow {
         get throws {
-            let formatter = ISO8601DateFormatter()
-            guard let date = formatter.date(from: resetsAt) else {
+            guard let date = Self.parseDate(resetsAt) else {
                 throw CocoaError(.coderReadCorrupt)
             }
             return UsageWindow(utilization: utilization, resetsAt: date)
         }
+    }
+
+    // The API sends fractional seconds ("...59.588521+00:00"), which a default
+    // ISO8601DateFormatter can't parse — try with fractional seconds first, then without.
+    static func parseDate(_ string: String) -> Date? {
+        let withFraction = ISO8601DateFormatter()
+        withFraction.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = withFraction.date(from: string) { return date }
+        return ISO8601DateFormatter().date(from: string)
     }
 }
