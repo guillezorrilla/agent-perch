@@ -3,6 +3,8 @@ import XCTest
 
 final class NotchHoverTests: XCTestCase {
     private let grace = 0.35
+    private let screenFrame = NSRect(x: 0, y: 0, width: 1_000, height: 800)
+    private let notchRect = NSRect(x: 450, y: 770, width: 100, height: 30)
 
     private func step(_ state: inout NotchHoverController.State, inside: Bool, now: TimeInterval)
         -> NotchHoverController.Effect {
@@ -41,5 +43,70 @@ final class NotchHoverTests: XCTestCase {
         XCTAssertEqual(step(&s, inside: true, now: 1.1), .none) // back inside, cancels
         XCTAssertNil(s.outsideSince)
         XCTAssertEqual(step(&s, inside: false, now: 5.0), .none) // grace must re-arm from scratch
+    }
+
+    func testSelectsNotchScreenAmongExternalDisplays() {
+        let external = ScreenInfo(id: 1, frame: screenFrame, hasNotch: false, isMain: true)
+        let macBook = ScreenInfo(id: 2, frame: screenFrame, hasNotch: true, isMain: false)
+
+        XCTAssertEqual(ScreenInfo.selected(from: [external, macBook])?.id, 2)
+    }
+
+    func testSelectsMainScreenWhenNoDisplayHasANotch() {
+        let secondary = ScreenInfo(id: 1, frame: screenFrame, hasNotch: false, isMain: false)
+        let main = ScreenInfo(id: 2, frame: screenFrame, hasNotch: false, isMain: true)
+
+        XCTAssertEqual(ScreenInfo.selected(from: [secondary, main])?.id, 2)
+    }
+
+    func testSelectsSingleExternalScreen() {
+        let external = ScreenInfo(id: 1, frame: screenFrame, hasNotch: false, isMain: true)
+
+        XCTAssertEqual(ScreenInfo.selected(from: [external])?.id, 1)
+    }
+
+    func testCursorOnOtherScreenIsOutsideNaiveCrossScreenUnion() {
+        let otherScreenPanel = NSRect(x: 1_200, y: 500, width: 300, height: 300)
+        let cursor = NSPoint(x: 1_300, y: 700)
+
+        XCTAssertFalse(NotchHoverController.isInside(
+            cursor: cursor,
+            notchRect: notchRect,
+            panelFrame: otherScreenPanel,
+            screenFrame: screenFrame,
+            expanded: true
+        ))
+    }
+
+    func testPanelOnOtherScreenIsNotUnioned() {
+        let otherScreenPanel = NSRect(x: 1_200, y: 500, width: 300, height: 300)
+
+        XCTAssertEqual(NotchHoverController.hotZone(
+            notchRect: notchRect,
+            panelFrame: otherScreenPanel,
+            screenFrame: screenFrame,
+            expanded: true
+        ), notchRect)
+    }
+
+    func testEmptyPanelFrameIsNotUnioned() {
+        XCTAssertEqual(NotchHoverController.hotZone(
+            notchRect: notchRect,
+            panelFrame: .zero,
+            screenFrame: screenFrame,
+            expanded: true
+        ), notchRect)
+    }
+
+    func testExpandedPanelOnSelectedScreenRemainsInHotZone() {
+        let panel = NSRect(x: 300, y: 500, width: 400, height: 300)
+
+        XCTAssertTrue(NotchHoverController.isInside(
+            cursor: NSPoint(x: 350, y: 600),
+            notchRect: notchRect,
+            panelFrame: panel,
+            screenFrame: screenFrame,
+            expanded: true
+        ))
     }
 }

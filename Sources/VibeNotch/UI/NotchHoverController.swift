@@ -1,5 +1,37 @@
 @preconcurrency import AppKit
 
+struct ScreenInfo: Equatable {
+    let id: CGDirectDisplayID
+    let frame: NSRect
+    let hasNotch: Bool
+    let isMain: Bool
+
+    init(id: CGDirectDisplayID, frame: NSRect, hasNotch: Bool, isMain: Bool) {
+        self.id = id
+        self.frame = frame
+        self.hasNotch = hasNotch
+        self.isMain = isMain
+    }
+
+    init(_ screen: NSScreen, mainScreen: NSScreen?) {
+        let displayID = Self.displayID(for: screen)
+        id = displayID
+        frame = screen.frame
+        hasNotch = screen.auxiliaryTopLeftArea != nil && screen.auxiliaryTopRightArea != nil
+        isMain = mainScreen.map { Self.displayID(for: $0) == displayID } ?? false
+    }
+
+    static func selected(from screens: [ScreenInfo]) -> ScreenInfo? {
+        screens.first(where: \ScreenInfo.hasNotch) ?? screens.first(where: \ScreenInfo.isMain)
+    }
+
+    private static func displayID(for screen: NSScreen) -> CGDirectDisplayID {
+        let key = NSDeviceDescriptionKey("NSScreenNumber")
+        return (screen.deviceDescription[key] as? NSNumber)?.uint32Value
+            ?? CGDirectDisplayID(truncatingIfNeeded: screen.hash)
+    }
+}
+
 // Poll-based hover with hysteresis. An NSTrackingArea on the bare notch rect thrashes:
 // expanding the panel downward moves the cursor out of the notch rect, firing exit ->
 // collapse -> cursor back in notch -> enter, forever. Here the "hot zone" is the notch
@@ -42,12 +74,45 @@ final class NotchHoverController {
         return .collapse
     }
 
+    nonisolated static func hotZone(
+        notchRect: NSRect,
+        panelFrame: NSRect?,
+        screenFrame: NSRect,
+        expanded: Bool
+    ) -> NSRect {
+        guard !screenFrame.isEmpty, !notchRect.isEmpty else { return .zero }
+        let notchRect = notchRect.intersection(screenFrame)
+        guard !notchRect.isEmpty,
+              expanded,
+              let panelFrame,
+              !panelFrame.isEmpty,
+              panelFrame.intersects(screenFrame) else { return notchRect }
+        return notchRect.union(panelFrame.intersection(screenFrame))
+    }
+
+    nonisolated static func isInside(
+        cursor: NSPoint,
+        notchRect: NSRect,
+        panelFrame: NSRect?,
+        screenFrame: NSRect,
+        expanded: Bool
+    ) -> Bool {
+        guard screenFrame.contains(cursor) else { return false }
+        return hotZone(
+            notchRect: notchRect,
+            panelFrame: panelFrame,
+            screenFrame: screenFrame,
+            expanded: expanded
+        ).contains(cursor)
+    }
+
     private var timer: Timer?
     private var state = State()
     private let exitGrace: TimeInterval
     private let pollInterval: TimeInterval
 
     private var notchRect: () -> NSRect = { .zero }
+    private var screenFrame: () -> NSRect = { .zero }
     private var expandedFrame: () -> NSRect? = { nil }
     private var onEnter: () -> Void = {}
     private var onExit: () -> Void = {}
@@ -59,12 +124,14 @@ final class NotchHoverController {
 
     func start(
         notchRect: @escaping () -> NSRect,
+        screenFrame: @escaping () -> NSRect,
         expandedFrame: @escaping () -> NSRect?,
         onEnter: @escaping () -> Void,
         onExit: @escaping () -> Void
     ) {
         stop()
         self.notchRect = notchRect
+        self.screenFrame = screenFrame
         self.expandedFrame = expandedFrame
         self.onEnter = onEnter
         self.onExit = onExit
@@ -89,13 +156,13 @@ final class NotchHoverController {
     }
 
     private func tick() {
-        let region: NSRect
-        if state.expanded, let frame = expandedFrame() {
-            region = notchRect().union(frame)
-        } else {
-            region = notchRect()
-        }
-        let inside = region.contains(NSEvent.mouseLocation)
+        let inside = Self.isInside(
+            cursor: NSEvent.mouseLocation,
+            notchRect: notchRect(),
+            panelFrame: state.expanded ? expandedFrame() : nil,
+            screenFrame: screenFrame(),
+            expanded: state.expanded
+        )
         switch Self.step(&state, mouseInside: inside, now: Date().timeIntervalSinceReferenceDate, exitGrace: exitGrace) {
         case .expand: onEnter()
         case .collapse: onExit()

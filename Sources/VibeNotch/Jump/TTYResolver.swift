@@ -53,6 +53,28 @@ struct TTYResolver {
             || command.contains("/@anthropic-ai/claude-code/")
     }
 
+    // Fallback when no live claude process matches: any shell sitting at the session's
+    // cwd (the user's still-open tab after the agent exited). One lsof call for all shells.
+    func shellTTY(at cwd: String) -> String? {
+        guard let listing = Self.output(
+            "/usr/sbin/lsof",
+            ["-a", "-d", "cwd", "-c", "zsh", "-c", "bash", "-c", "fish", "-Fpn"]
+        ), let pid = Self.firstPid(withCwd: cwd, inLsofFieldOutput: listing) else { return nil }
+        return tty(for: pid)
+    }
+
+    static func firstPid(withCwd cwd: String, inLsofFieldOutput listing: String) -> Int32? {
+        var currentPid: Int32?
+        for line in listing.split(whereSeparator: \.isNewline) {
+            if line.first == "p" {
+                currentPid = Int32(line.dropFirst())
+            } else if line.first == "n", String(line.dropFirst()) == cwd {
+                if let currentPid { return currentPid }
+            }
+        }
+        return nil
+    }
+
     private func cwd(for pid: Int32) -> String? {
         Self.output("/usr/sbin/lsof", ["-a", "-p", String(pid), "-d", "cwd", "-Fn"])?
             .split(whereSeparator: \.isNewline)
