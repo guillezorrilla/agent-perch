@@ -3,6 +3,10 @@ import Foundation
 enum SessionStatus: Equatable, Sendable {
     case active
     case idle
+    case working
+    case needsAction
+    case done
+    case ended
 
     static func at(modifiedAt: Date, now: Date = Date()) -> SessionStatus? {
         let age = now.timeIntervalSince(modifiedAt)
@@ -18,6 +22,13 @@ struct AgentSession: Identifiable, Equatable, Sendable {
     let modifiedAt: Date
     let status: SessionStatus
     let jumpRung: JumpRung
+    let title: String
+    let lastPrompt: String?
+    let tty: String?
+    let terminalName: String?
+    let notificationMessage: String?
+    let pendingToolName: String?
+    let pendingToolInput: JSONValue?
 
     var id: String { sessionId }
 

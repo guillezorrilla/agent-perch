@@ -15,6 +15,17 @@ final class Jumper {
     private let appleScript = AppleScriptRunner()
 
     static func rung(for cwd: String, processes: [ClaudeProcess]) -> JumpRung {
+        rung(for: cwd, preferredTTY: nil, processes: processes)
+    }
+
+    static func rung(
+        for cwd: String,
+        preferredTTY: String?,
+        processes: [ClaudeProcess]
+    ) -> JumpRung {
+        if let preferredTTY, !preferredTTY.isEmpty, preferredTTY != "??" {
+            return .exactFocus(tty: preferredTTY)
+        }
         if let tty = TTYResolver.tty(for: cwd, in: processes) {
             return .exactFocus(tty: tty)
         }
@@ -24,7 +35,11 @@ final class Jumper {
     @MainActor
     @discardableResult
     func jump(_ session: AgentSession) -> Bool {
-        let rung = Self.rung(for: session.cwd, processes: resolver.processes())
+        let rung = Self.rung(
+            for: session.cwd,
+            preferredTTY: session.tty,
+            processes: resolver.processes()
+        )
         if case let .exactFocus(tty) = rung, focus(tty: tty) {
             return true
         }
