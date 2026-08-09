@@ -122,6 +122,12 @@ final class UsageProvider: ObservableObject {
         usage = lastGood
     }
 
+    // User tapped "refresh": bypass the throttle and hit the network now.
+    func forceRefresh() async {
+        lastFetchAt = nil
+        await refresh()
+    }
+
     func refresh() async {
         // Hovering re-creates the panel and re-fires this on every expand; without a
         // floor, rapid hovers hammer /oauth/usage into 429. Serve cache within the window.
