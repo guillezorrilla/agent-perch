@@ -27,8 +27,8 @@ struct NotchContentView: View {
         Group {
             if let featuredSession {
                 VStack(alignment: .leading, spacing: 10) {
-                    if let usage = usageProvider.usage {
-                        UsageStripView(usage: usage)
+                    UsageStripView(usage: usageProvider.usage) {
+                        Task { await usageProvider.forceRefresh() }
                     }
 
                     featuredCard(for: featuredSession)
@@ -181,21 +181,33 @@ struct CompactTrailingView: View {
 }
 
 struct UsageStripView: View {
-    let usage: UsageSnapshot
+    let usage: UsageSnapshot?
+    var onRefresh: () -> Void = {}
 
     var body: some View {
         HStack(spacing: 7) {
             Text("✦")
                 .foregroundStyle(.white)
-            window(label: "5h", value: usage.fiveHour)
-            Text("|")
-                .foregroundStyle(Color.vibeGray.opacity(0.65))
-            window(label: "7d", value: usage.sevenDay)
+            if let usage {
+                window(label: "5h", value: usage.fiveHour)
+                Text("|")
+                    .foregroundStyle(Color.vibeGray.opacity(0.65))
+                window(label: "7d", value: usage.sevenDay)
+            } else {
+                // No snapshot yet (never fetched / rate-limited) — still offer a refresh.
+                Text("usage unavailable")
+                    .foregroundStyle(Color.vibeGray)
+            }
+            Button(action: onRefresh) {
+                Image(systemName: "arrow.clockwise")
+                    .foregroundStyle(Color.vibeGray)
+            }
+            .buttonStyle(.plain)
+            .help("Refresh usage")
         }
         .font(.system(size: 11, weight: .medium, design: .monospaced))
         .lineLimit(1)
         .padding(.horizontal, 4)
-        .accessibilityElement(children: .combine)
     }
 
     @ViewBuilder

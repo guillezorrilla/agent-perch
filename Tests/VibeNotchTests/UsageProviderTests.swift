@@ -126,3 +126,19 @@ extension UsageProviderTests {
         XCTAssertEqual(loader.calls, 1, "within the throttle window only the first call hits the network")
     }
 }
+
+extension UsageProviderTests {
+    @MainActor
+    func testForceRefreshBypassesThrottle() async {
+        let good = """
+        {"five_hour":{"utilization":10,"resets_at":"2026-08-09T22:19:59Z"},
+         "seven_day":{"utilization":20,"resets_at":"2026-08-10T00:59:59Z"}}
+        """.data(using: .utf8)!
+        let loader = StubLoader(status: 200, body: good)
+        let provider = UsageProvider(tokenSource: StubToken(), loader: loader, minFetchInterval: 999)
+        await provider.refresh()        // call 1 (network)
+        await provider.refresh()        // throttled -> cache
+        await provider.forceRefresh()   // bypass -> network again
+        XCTAssertEqual(loader.calls, 2, "forceRefresh ignores the throttle window")
+    }
+}
