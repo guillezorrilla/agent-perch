@@ -58,3 +58,25 @@ final class DwellTimeTests: XCTestCase {
         XCTAssertEqual(NeedsActionDwellTime.tenSeconds.seconds, 10)
     }
 }
+
+extension UsageProviderTests {
+    func testParsesFractionalSecondsResetTimestamp() throws {
+        // Real API shape: fractional seconds + offset. Default ISO8601 formatter rejects this.
+        let json = """
+        {"five_hour":{"utilization":17.0,"resets_at":"2026-08-09T22:19:59.588521+00:00"},
+         "seven_day":{"utilization":100.0,"resets_at":"2026-08-10T00:59:59.588545+00:00"}}
+        """.data(using: .utf8)!
+        let snap = try UsageSnapshot.parse(json)
+        XCTAssertEqual(snap.fiveHour.utilization, 17.0)
+        XCTAssertEqual(snap.sevenDay.utilization, 100.0)
+    }
+
+    func testParsesTimestampWithoutFractionalSeconds() throws {
+        let json = """
+        {"five_hour":{"utilization":5.0,"resets_at":"2026-08-09T22:19:59Z"},
+         "seven_day":{"utilization":9.0,"resets_at":"2026-08-10T00:59:59Z"}}
+        """.data(using: .utf8)!
+        let snap = try UsageSnapshot.parse(json)
+        XCTAssertEqual(snap.fiveHour.utilization, 5.0)
+    }
+}
