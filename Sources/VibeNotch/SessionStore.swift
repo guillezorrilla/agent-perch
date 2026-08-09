@@ -108,7 +108,9 @@ final class SessionStore: ObservableObject {
             state.status = .working
         case "UserPromptSubmit":
             state.status = .working
-            state.lastPrompt = event.prompt ?? state.lastPrompt
+            // Harness-generated turns (task notifications etc.) must not clobber the
+            // last real user prompt — filter at ingestion.
+            state.lastPrompt = SessionTitle.displayablePrompt(event.prompt) ?? state.lastPrompt
             state.notificationMessage = nil
             state.pendingToolName = nil
             state.pendingToolInput = nil
