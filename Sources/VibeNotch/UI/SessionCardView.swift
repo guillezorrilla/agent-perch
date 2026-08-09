@@ -7,13 +7,20 @@ struct SessionCardView: View {
     var body: some View {
         Button(action: onClick) {
             HStack(spacing: 10) {
-                Circle()
-                    .fill(session.status == .active ? Color.green : Color.gray)
-                    .frame(width: 7, height: 7)
+                SessionStatusDot(status: session.status, size: 7)
 
-                Text(session.folderName)
-                    .font(.system(size: 13, weight: .medium, design: .monospaced))
-                    .lineLimit(1)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(session.title)
+                        .font(.system(size: 13, weight: .medium, design: .monospaced))
+                        .lineLimit(1)
+                    if let lastPrompt = session.lastPrompt {
+                        Text(lastPrompt)
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                }
 
                 Spacer(minLength: 8)
 
@@ -27,7 +34,8 @@ struct SessionCardView: View {
                     .help(session.jumpRung.isExact ? "Jump to terminal" : "Open a new terminal tab")
             }
             .padding(.horizontal, 12)
-            .frame(height: 40)
+            .frame(minHeight: 40)
+            .padding(.vertical, session.lastPrompt == nil ? 0 : 6)
             .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
             .contentShape(Rectangle())
         }
@@ -42,6 +50,13 @@ struct SessionCardView: View {
     }
 
     private var statusLabel: String {
-        session.status == .active ? "active" : "idle"
+        switch session.status {
+        case .active: "active"
+        case .idle: "idle"
+        case .working: "working"
+        case .needsAction: "needs action"
+        case .done: "done"
+        case .ended: "ended"
+        }
     }
 }

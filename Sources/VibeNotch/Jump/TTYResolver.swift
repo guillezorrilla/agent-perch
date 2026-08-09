@@ -9,7 +9,7 @@ struct ClaudeProcess: Equatable, Sendable {
 
 struct TTYResolver {
     func processes() -> [ClaudeProcess] {
-        guard let listing = output("/usr/bin/pgrep", ["-fl", "claude"]) else {
+        guard let listing = Self.output("/usr/bin/pgrep", ["-fl", "claude"]) else {
             return []
         }
 
@@ -54,21 +54,21 @@ struct TTYResolver {
     }
 
     private func cwd(for pid: Int32) -> String? {
-        output("/usr/sbin/lsof", ["-a", "-p", String(pid), "-d", "cwd", "-Fn"])?
+        Self.output("/usr/sbin/lsof", ["-a", "-p", String(pid), "-d", "cwd", "-Fn"])?
             .split(whereSeparator: \.isNewline)
             .first { $0.first == "n" }
             .map { String($0.dropFirst()) }
     }
 
     private func tty(for pid: Int32) -> String? {
-        guard let value = output("/bin/ps", ["-o", "tty=", "-p", String(pid)])?
+        guard let value = Self.output("/bin/ps", ["-o", "tty=", "-p", String(pid)])?
             .trimmingCharacters(in: .whitespacesAndNewlines),
               !value.isEmpty,
               value != "??" else { return nil }
         return value.hasPrefix("/dev/") ? String(value.dropFirst(5)) : value
     }
 
-    private func output(_ executable: String, _ arguments: [String]) -> String? {
+    static func output(_ executable: String, _ arguments: [String]) -> String? {
         let process = Process()
         let pipe = Pipe()
         process.executableURL = URL(fileURLWithPath: executable)

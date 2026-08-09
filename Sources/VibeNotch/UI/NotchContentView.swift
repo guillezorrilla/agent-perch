@@ -56,9 +56,7 @@ struct CompactStatusView: View {
             } else {
                 HStack(spacing: 4) {
                     ForEach(store.sessions) { session in
-                        Circle()
-                            .fill(session.status == .active ? Color.green : Color.gray)
-                            .frame(width: 6, height: 6)
+                        SessionStatusDot(status: session.status, size: 6)
                     }
                 }
             }
@@ -71,5 +69,34 @@ struct CompactStatusView: View {
         }
         .accessibilityLabel("Claude sessions")
         .accessibilityHint("Show session list")
+    }
+}
+
+struct SessionStatusDot: View {
+    let status: SessionStatus
+    let size: CGFloat
+    @State private var pulse = false
+
+    var body: some View {
+        Circle()
+            .fill(color)
+            .frame(width: size, height: size)
+            .opacity(status == .needsAction && pulse ? 0.35 : 1)
+            .animation(
+                status == .needsAction
+                    ? .easeInOut(duration: 0.7).repeatForever(autoreverses: true)
+                    : .default,
+                value: pulse
+            )
+            .onAppear { pulse = status == .needsAction }
+            .onChange(of: status) { _, newStatus in pulse = newStatus == .needsAction }
+    }
+
+    private var color: Color {
+        switch status {
+        case .active, .working: .green
+        case .needsAction: .orange
+        case .idle, .done, .ended: .gray
+        }
     }
 }

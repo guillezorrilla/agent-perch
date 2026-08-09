@@ -51,4 +51,11 @@ final class JumpLadderTests: XCTestCase {
             .newTab
         )
     }
+
+    func testHookTTYWinsWithoutAProcessRescanMatch() {
+        XCTAssertEqual(
+            Jumper.rung(for: "/repo", preferredTTY: "ttys009", processes: []),
+            .exactFocus(tty: "ttys009")
+        )
+    }
 }
