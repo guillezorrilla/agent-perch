@@ -8,10 +8,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let jumper = Jumper()
     private let actions = NotchActions()
     private let settings = AppSettings()
+    private let usageProvider = UsageProvider()
+    private let actionInjector = ActionInjector()
     private let trackingWindow = NotchTrackingWindow()
     private var projectsWatcher: ClaudeProjectsWatcher?
     private var spoolWatcher: SpoolWatcher?
-    private var notch: DynamicNotch<NotchContentView, CompactStatusView, EmptyView>?
+    private var notch: DynamicNotch<NotchContentView, CompactLeadingView, CompactTrailingView>?
     private var notifier: SessionNotifier?
     private var settingsWindow: SettingsWindowController?
     private var statusItem: StatusItemController?
@@ -22,12 +24,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         _ = try? HookScript.materialize(in: settings.applicationSupportDirectory)
         store.refresh()
 
-        let notch = DynamicNotch(hoverBehavior: [.increaseShadow]) {
-            NotchContentView(store: self.store, jumper: self.jumper, actions: self.actions)
+        let screenHasNotch = NSScreen.screens.first.map {
+            $0.auxiliaryTopLeftArea != nil && $0.auxiliaryTopRightArea != nil
+        } ?? true
+        let style: DynamicNotchStyle = screenHasNotch
+            ? .notch(topCornerRadius: 15, bottomCornerRadius: 24)
+            : .floating(cornerRadius: 24)
+        let notch = DynamicNotch(hoverBehavior: [.increaseShadow], style: style) {
+            NotchContentView(
+                store: self.store,
+                usageProvider: self.usageProvider,
+                settings: self.settings,
+                jumper: self.jumper,
+                actionInjector: self.actionInjector,
+                actions: self.actions
+            )
         } compactLeading: {
-            CompactStatusView(store: self.store, actions: self.actions)
+            CompactLeadingView(store: self.store, actions: self.actions)
         } compactTrailing: {
-            EmptyView()
+            CompactTrailingView(store: self.store, actions: self.actions)
         }
         notch.transitionConfiguration.skipIntermediateHides = true
         self.notch = notch
@@ -104,6 +119,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func expandNotch() {
         guard settings.displayMode != .hidden,
+              !(settings.displayMode == .hoverOnly && store.sessions.isEmpty),
               let screen = NSScreen.screens.first else { return }
         Task { @MainActor [weak notch] in await notch?.expand(on: screen) }
     }
@@ -127,8 +143,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard settings.displayMode != .hidden else { return }
         autoCollapseTask?.cancel()
         expandNotch()
+        guard let seconds = settings.dwellTime.seconds else { return }
         autoCollapseTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(3))
+            try? await Task.sleep(for: .seconds(seconds))
             guard !Task.isCancelled, let self else { return }
             applyDisplayMode(settings.displayMode)
         }

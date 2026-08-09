@@ -58,4 +58,21 @@ final class JumpLadderTests: XCTestCase {
             .exactFocus(tty: "ttys009")
         )
     }
+
+    func testOpenerOrderPutsDetectedTerminalFirst() {
+        XCTAssertEqual(Jumper.openerOrder(preferring: "warp"), ["warp", "iterm", "terminal"])
+        XCTAssertEqual(Jumper.openerOrder(preferring: "terminal.app"), ["terminal", "iterm", "warp"])
+        XCTAssertEqual(Jumper.openerOrder(preferring: "iterm2"), ["iterm", "terminal", "warp"])
+        // Unknown/unsupported terminal or no detection → stable default order.
+        XCTAssertEqual(Jumper.openerOrder(preferring: "ghostty"), ["iterm", "terminal", "warp"])
+        XCTAssertEqual(Jumper.openerOrder(preferring: nil), ["iterm", "terminal", "warp"])
+    }
+
+    func testExactFocusOnlyForTTYExposingTerminals() {
+        XCTAssertTrue(Jumper.canExactFocus(nil))
+        XCTAssertTrue(Jumper.canExactFocus("iterm"))
+        XCTAssertTrue(Jumper.canExactFocus("terminal"))
+        XCTAssertFalse(Jumper.canExactFocus("warp"))
+        XCTAssertFalse(Jumper.canExactFocus("ghostty"))
+    }
 }

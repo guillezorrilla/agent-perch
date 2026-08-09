@@ -110,10 +110,12 @@ final class SessionStore: ObservableObject {
             state.status = .working
             state.lastPrompt = event.prompt ?? state.lastPrompt
             state.notificationMessage = nil
+            state.pendingToolName = nil
+            state.pendingToolInput = nil
         case "PreToolUse":
             state.status = .working
-            state.pendingToolName = event.toolName ?? state.pendingToolName
-            state.pendingToolInput = event.toolInput ?? state.pendingToolInput
+            state.pendingToolName = event.toolName
+            state.pendingToolInput = event.toolInput
             state.notificationMessage = nil
         case "Notification":
             state.status = .needsAction
@@ -121,9 +123,13 @@ final class SessionStore: ObservableObject {
         case "Stop":
             state.status = .done
             state.notificationMessage = nil
+            state.pendingToolName = nil
+            state.pendingToolInput = nil
         case "SessionEnd":
             state.status = .ended
             state.notificationMessage = nil
+            state.pendingToolName = nil
+            state.pendingToolInput = nil
         default:
             return nil
         }

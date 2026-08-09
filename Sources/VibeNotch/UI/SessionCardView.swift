@@ -1,62 +1,311 @@
 import SwiftUI
 
-struct SessionCardView: View {
+struct FeaturedSessionCard: View {
     let session: AgentSession
     let onClick: () -> Void
 
     var body: some View {
         Button(action: onClick) {
-            HStack(spacing: 10) {
-                SessionStatusDot(status: session.status, size: 7)
+            HStack(spacing: 13) {
+                InvaderGlyph(color: statusColor)
+                    .scaleEffect(2)
+                    .frame(width: 26, height: 24)
 
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: 5) {
                     Text(session.title)
-                        .font(.system(size: 13, weight: .medium, design: .monospaced))
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.white)
                         .lineLimit(1)
-                    if let lastPrompt = session.lastPrompt {
-                        Text(lastPrompt)
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                    }
+
+                    Text("You: \(session.lastPrompt ?? "No prompt captured")")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.vibeGray)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+
+                    statusLine
                 }
 
-                Spacer(minLength: 8)
+                Spacer(minLength: 10)
 
-                Text(relativeAge)
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(.secondary)
-
-                Image(systemName: session.jumpRung.isExact ? "terminal.fill" : "terminal")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(session.jumpRung.isExact ? Color.green : Color.secondary)
-                    .help(session.jumpRung.isExact ? "Jump to terminal" : "Open a new terminal tab")
+                VStack(alignment: .trailing, spacing: 8) {
+                    SessionPills(terminalName: session.terminalName)
+                    ElapsedText(since: session.modifiedAt)
+                }
             }
-            .padding(.horizontal, 12)
-            .frame(minHeight: 40)
-            .padding(.vertical, session.lastPrompt == nil ? 0 : 6)
-            .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
-            .contentShape(Rectangle())
+            .padding(14)
+            .background(Color.vibeCard, in: RoundedRectangle(cornerRadius: 16))
+            .contentShape(RoundedRectangle(cornerRadius: 16))
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(session.folderName), \(statusLabel), \(relativeAge)")
-        .accessibilityHint(session.jumpRung.isExact ? "Jump to its terminal" : "Open it in a terminal")
+        .accessibilityLabel("\(session.title), \(statusLabel)")
+        .accessibilityHint("Jump to terminal")
     }
 
-    private var relativeAge: String {
-        let minutes = max(0, Int(Date().timeIntervalSince(session.modifiedAt))) / 60
-        return minutes == 0 ? "<1m" : "\(minutes)m"
+    @ViewBuilder
+    private var statusLine: some View {
+        switch session.status {
+        case .needsAction:
+            Text("Needs input — click to respond")
+                .foregroundStyle(Color.vibeAmber)
+        case .done, .ended:
+            Text("Done — click to jump")
+                .foregroundStyle(Color.vibeGreen)
+        case .active, .idle, .working:
+            HStack(spacing: 5) {
+                ProgressView()
+                    .controlSize(.mini)
+                Text("Working…")
+            }
+            .foregroundStyle(Color.vibeGray)
+        }
+    }
+
+    private var statusColor: Color {
+        switch session.status {
+        case .needsAction: .vibeAmber
+        case .active, .working: .vibeGreen
+        case .idle, .done, .ended: .vibeGray
+        }
     }
 
     private var statusLabel: String {
         switch session.status {
-        case .active: "active"
-        case .idle: "idle"
-        case .working: "working"
-        case .needsAction: "needs action"
-        case .done: "done"
-        case .ended: "ended"
+        case .needsAction: "needs input"
+        case .done, .ended: "done"
+        case .active, .idle, .working: "working"
         }
     }
+}
+
+struct CompactSessionRow: View {
+    let session: AgentSession
+    let onClick: () -> Void
+
+    var body: some View {
+        Button(action: onClick) {
+            HStack(spacing: 9) {
+                SessionStatusDot(status: session.status, size: 7)
+                Text(session.title)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                Spacer(minLength: 8)
+                SessionPills(terminalName: session.terminalName)
+                ElapsedText(since: session.modifiedAt)
+            }
+            .padding(.horizontal, 12)
+            .frame(minHeight: 36)
+            .background(Color.vibeCard.opacity(0.72), in: RoundedRectangle(cornerRadius: 11))
+            .contentShape(RoundedRectangle(cornerRadius: 11))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(session.title), open terminal")
+    }
+}
+
+struct PermissionRequestCard: View {
+    let request: PermissionRequest
+    let onDecision: (ActionDecision) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 11) {
+            HStack(spacing: 7) {
+                Circle()
+                    .fill(Color.vibeAmber)
+                    .frame(width: 7, height: 7)
+                Text("Permission Request")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Color.vibeGray)
+            }
+
+            HStack(alignment: .firstTextBaseline, spacing: 7) {
+                Text("⚠︎")
+                    .foregroundStyle(Color.vibeAmber)
+                Text(request.toolName)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.vibeAmber)
+                Text(request.target)
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+
+            if let diff = request.diff {
+                DiffPreviewView(diff: diff)
+            } else {
+                Text(request.details)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.86))
+                    .lineLimit(4)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(10)
+                    .background(Color.vibePanel, in: RoundedRectangle(cornerRadius: 9))
+            }
+
+            ActionButtons(
+                negativeTitle: "Deny ⌘N",
+                positiveTitle: "Allow ⌘Y",
+                onDecision: onDecision
+            )
+        }
+        .padding(14)
+        .background(Color.vibeCard, in: RoundedRectangle(cornerRadius: 16))
+        .accessibilityElement(children: .contain)
+    }
+}
+
+struct PlanReviewCard: View {
+    let markdown: String
+    let onDecision: (ActionDecision) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 11) {
+            HStack(spacing: 7) {
+                Circle()
+                    .fill(Color.vibeBlue)
+                    .frame(width: 7, height: 7)
+                Text("Plan Review")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Color.vibeGray)
+            }
+
+            ScrollView {
+                Group {
+                    if let renderedMarkdown {
+                        Text(renderedMarkdown)
+                    } else {
+                        Text(markdown)
+                    }
+                }
+                .font(.system(size: 12))
+                .foregroundStyle(.white.opacity(0.9))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: 300)
+            .padding(11)
+            .background(Color.vibePanel, in: RoundedRectangle(cornerRadius: 9))
+
+            ActionButtons(
+                negativeTitle: "Reject ⌘N",
+                positiveTitle: "Approve ⌘Y",
+                onDecision: onDecision
+            )
+        }
+        .padding(14)
+        .background(Color.vibeCard, in: RoundedRectangle(cornerRadius: 16))
+        .accessibilityElement(children: .contain)
+    }
+
+    private var renderedMarkdown: AttributedString? {
+        try? AttributedString(
+            markdown: markdown,
+            options: .init(interpretedSyntax: .full)
+        )
+    }
+}
+
+private struct DiffPreviewView: View {
+    let diff: DiffPreview
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            ForEach(Array(diff.lines.enumerated()), id: \.offset) { _, line in
+                Text("\(line.kind == .removed ? "-" : "+")\(line.text)")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(line.kind == .removed ? Color.red : Color.vibeGreen)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(
+                        (line.kind == .removed ? Color.red : Color.vibeGreen).opacity(0.11)
+                    )
+            }
+
+            if diff.isTruncated {
+                Text("…")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(Color.vibeGray)
+                    .padding(.horizontal, 8)
+            }
+
+            Text("+\(diff.addedCount) -\(diff.removedCount)")
+                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                .foregroundStyle(Color.vibeGray)
+                .padding(.horizontal, 8)
+                .padding(.top, 5)
+        }
+        .padding(.vertical, 8)
+        .background(Color.vibePanel, in: RoundedRectangle(cornerRadius: 9))
+    }
+}
+
+private struct ActionButtons: View {
+    let negativeTitle: String
+    let positiveTitle: String
+    let onDecision: (ActionDecision) -> Void
+
+    var body: some View {
+        HStack {
+            Spacer()
+            Button(negativeTitle) { onDecision(.deny) }
+                .buttonStyle(.plain)
+                .keyboardShortcut("n", modifiers: .command)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 7)
+                .foregroundStyle(.white)
+                .background(Color.vibeBadge, in: Capsule())
+
+            Button(positiveTitle) { onDecision(.allow) }
+                .buttonStyle(.plain)
+                .keyboardShortcut("y", modifiers: .command)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 7)
+                .foregroundStyle(.black)
+                .background(.white, in: Capsule())
+        }
+    }
+}
+
+private struct SessionPills: View {
+    let terminalName: String?
+
+    var body: some View {
+        HStack(spacing: 4) {
+            pill("Claude")
+            if let terminalName {
+                pill(terminalName)
+            }
+        }
+    }
+
+    private func pill(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 9, weight: .medium))
+            .foregroundStyle(Color.white.opacity(0.72))
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(Color.vibeBadge, in: Capsule())
+    }
+}
+
+private struct ElapsedText: View {
+    let since: Date
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 30)) { context in
+            Text(elapsed(since: since, now: context.date))
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(Color.vibeGray)
+        }
+    }
+}
+
+private func elapsed(since: Date, now: Date) -> String {
+    let totalMinutes = max(0, Int(now.timeIntervalSince(since)) / 60)
+    if totalMinutes < 1 { return "<1m" }
+    if totalMinutes < 60 { return "\(totalMinutes)m" }
+    return "\(totalMinutes / 60)h\(totalMinutes % 60)m"
 }

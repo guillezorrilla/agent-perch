@@ -7,6 +7,7 @@ final class TerminalNameResolverTests: XCTestCase {
             ("/Applications/iTerm.app/Contents/MacOS/iTerm2", "iTerm"),
             ("/System/Applications/Utilities/Terminal.app/Contents/MacOS/Apple_Terminal", "Terminal"),
             ("/Applications/Warp.app/Contents/MacOS/WarpTerminal", "Warp"),
+            ("/Applications/Warp.app/Contents/MacOS/stable", "Warp"),
             ("tmux: server", "tmux"),
             ("/Applications/Ghostty.app/Contents/MacOS/ghostty", "Ghostty"),
             ("/Applications/WezTerm.app/Contents/MacOS/wezterm", "WezTerm"),
