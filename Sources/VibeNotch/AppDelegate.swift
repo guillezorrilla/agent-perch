@@ -10,7 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let settings = AppSettings()
     private let usageProvider = UsageProvider()
     private let actionInjector = ActionInjector()
-    private let trackingWindow = NotchTrackingWindow()
+    private let hoverController = NotchHoverController()
     private var projectsWatcher: ClaudeProjectsWatcher?
     private var spoolWatcher: SpoolWatcher?
     private var notch: DynamicNotch<NotchContentView, CompactLeadingView, CompactTrailingView>?
@@ -88,21 +88,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         autoCollapseTask?.cancel()
         projectsWatcher?.stop()
         spoolWatcher?.stop()
-        trackingWindow.hide()
+        hoverController.stop()
     }
 
     private func applyDisplayMode(_ mode: DisplayMode) {
         guard let screen = NSScreen.screens.first else { return }
         switch mode {
         case .hoverOnly:
-            trackingWindow.show(
-                on: screen,
+            hoverController.start(
+                notchRect: { NotchHoverController.notchFrame(on: screen) },
+                expandedFrame: { [weak self] in self?.notch?.windowController?.window?.frame },
                 onEnter: { [weak self] in self?.expandNotch() },
-                onExit: { [weak self] in self?.hideAfterTrackingExit() }
+                onExit: { [weak self] in
+                    Task { @MainActor [weak self] in await self?.notch?.hide() }
+                }
             )
             Task { @MainActor [weak notch] in await notch?.hide() }
         case .alwaysShow:
-            trackingWindow.hide()
+            hoverController.stop()
             Task { @MainActor [weak notch] in
                 if screen.auxiliaryTopLeftArea != nil,
                    screen.auxiliaryTopRightArea != nil {
@@ -112,7 +115,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         case .hidden:
-            trackingWindow.hide()
+            hoverController.stop()
             Task { @MainActor [weak notch] in await notch?.hide() }
         }
     }
@@ -125,17 +128,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func collapseNotch() {
-        applyDisplayMode(settings.displayMode)
-    }
-
-    private func hideAfterTrackingExit() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-            guard let self, settings.displayMode == .hoverOnly else { return }
-            if let frame = notch?.windowController?.window?.frame,
-               frame.contains(NSEvent.mouseLocation) {
-                return
-            }
+        switch settings.displayMode {
+        case .hoverOnly:
+            hoverController.resetExpanded()
             Task { @MainActor [weak notch] in await notch?.hide() }
+        case .alwaysShow, .hidden:
+            applyDisplayMode(settings.displayMode)
         }
     }
 
