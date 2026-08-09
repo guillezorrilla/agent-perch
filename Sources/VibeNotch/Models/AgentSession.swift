@@ -26,6 +26,7 @@ struct AgentSession: Identifiable, Equatable, Sendable {
     let lastPrompt: String?
     let tty: String?
     let terminalName: String?
+    var currentActivity: String?
     let notificationMessage: String?
     let pendingToolName: String?
     let pendingToolInput: JSONValue?

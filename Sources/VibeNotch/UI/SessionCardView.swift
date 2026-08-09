@@ -52,12 +52,23 @@ struct FeaturedSessionCard: View {
             Text("Done — click to jump")
                 .foregroundStyle(Color.vibeGreen)
         case .active, .idle, .working:
-            HStack(spacing: 5) {
-                ProgressView()
-                    .controlSize(.mini)
-                Text("Working…")
+            if session.status == .working, let activity = session.currentActivity {
+                HStack(spacing: 5) {
+                    SessionStatusDot(status: .working, size: 7)
+                    Text(activity)
+                        .font(.system(size: 11, design: .monospaced))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                .foregroundStyle(Color.vibeGray)
+            } else {
+                HStack(spacing: 5) {
+                    ProgressView()
+                        .controlSize(.mini)
+                    Text("Working…")
+                }
+                .foregroundStyle(Color.vibeGray)
             }
-            .foregroundStyle(Color.vibeGray)
         }
     }
 
