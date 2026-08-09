@@ -14,9 +14,11 @@ final class Jumper {
     private let resolver = TTYResolver()
     private let terminalResolver = TerminalNameResolver()
     private let appleScript = AppleScriptRunner()
+    private let warpTabLocator = WarpTabLocator()
+    private let warpFocuser = WarpFocuser()
 
-    // Only iTerm2 and Terminal.app expose per-tab tty for exact focus. Anything else
-    // (Warp, Ghostty, …) can only be reopened at the cwd, so don't attempt focus there.
+    // Only iTerm2 and Terminal.app expose per-tab tty for exact focus. Warp uses its
+    // state database below; anything else can only be reopened at the cwd.
     static func canExactFocus(_ terminal: String?) -> Bool {
         switch terminal {
         case nil, "iterm", "iterm2", "terminal", "terminal.app": return true
@@ -51,6 +53,16 @@ final class Jumper {
         return .newTab
     }
 
+    static func routeWarpJump(
+        cwd: String,
+        locate: (String) -> Int?,
+        focus: (Int) -> Bool,
+        fallback: () -> Bool
+    ) -> Bool {
+        guard let index = locate(cwd), focus(index) else { return fallback() }
+        return true
+    }
+
     @MainActor
     @discardableResult
     func jump(_ session: AgentSession) -> Bool {
@@ -65,6 +77,15 @@ final class Jumper {
         // resolve it by walking the live claude process's ancestry.
         let terminal = (session.terminalName
             ?? match.flatMap { terminalResolver.terminalName(for: $0.pid) })?.lowercased()
+
+        if terminal == "warp" {
+            return Self.routeWarpJump(
+                cwd: session.cwd,
+                locate: { warpTabLocator.tabIndex(forCwd: $0) },
+                focus: { warpFocuser.focus(tabIndex: $0) },
+                fallback: { openNewTab(at: session.cwd, preferring: terminal) }
+            )
+        }
 
         // Hook tty, else live claude tty, else any shell still sitting at the cwd —
         // the user's open tab after the agent exited (#10).
