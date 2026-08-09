@@ -35,7 +35,7 @@ struct ScreenInfo: Equatable {
 // Poll-based hover with hysteresis, and the SINGLE owner of panel visibility while a display
 // mode is active. An NSTrackingArea on the bare notch rect thrashes: expanding the panel
 // downward moves the cursor out of the notch rect, firing exit -> collapse -> cursor back in
-// notch -> enter, forever. Here the "hot zone" is the notch UNION the expanded panel, and
+// notch -> enter, forever. Here the "hot zone" is the notch UNION the visible panel area, and
 // collapse only fires after the cursor is truly outside it for `exitGrace`, so moving between
 // notch and panel never flickers.
 //
@@ -88,6 +88,10 @@ final class NotchHoverController {
         case collapse
     }
 
+    nonisolated static let defaultExitGrace: TimeInterval = 0.20
+    private nonisolated static let panelBottomOverreach: CGFloat = 180
+    private nonisolated static let minimumPanelHeight: CGFloat = 120
+
     // Pure state machine — the bug-prone part, unit-tested in isolation.
     nonisolated static func step(
         _ state: inout State,
@@ -117,7 +121,7 @@ final class NotchHoverController {
 
     nonisolated static func hotZone(
         notchRect: NSRect,
-        panelFrame: NSRect?,
+        panelRect: NSRect?,
         screenFrame: NSRect,
         expanded: Bool
     ) -> NSRect {
@@ -125,16 +129,40 @@ final class NotchHoverController {
         let notchRect = notchRect.intersection(screenFrame)
         guard !notchRect.isEmpty,
               expanded,
-              let panelFrame,
-              !panelFrame.isEmpty,
-              panelFrame.intersects(screenFrame) else { return notchRect }
-        return notchRect.union(panelFrame.intersection(screenFrame))
+              let panelRect,
+              !panelRect.isEmpty,
+              panelRect.intersects(screenFrame) else { return notchRect }
+        return notchRect.union(panelRect.intersection(screenFrame))
+    }
+
+    nonisolated static func visiblePanelRect(
+        screenFrame: NSRect,
+        panelWidth: CGFloat,
+        dnkFrame: NSRect?,
+        notchRect: NSRect
+    ) -> NSRect? {
+        let notchRect = notchRect.intersection(screenFrame)
+        guard !screenFrame.isEmpty,
+              !notchRect.isEmpty,
+              let dnkFrame,
+              !dnkFrame.isEmpty,
+              dnkFrame.intersects(screenFrame) else { return nil }
+        let width = min(max(panelWidth, 0), screenFrame.width)
+        guard width > 0 else { return nil }
+        let height = max(dnkFrame.height - panelBottomOverreach, minimumPanelHeight)
+        return NSRect(
+            x: screenFrame.midX - width / 2,
+            y: screenFrame.maxY - notchRect.height - height,
+            width: width,
+            height: height
+        ).intersection(screenFrame)
     }
 
     nonisolated static func isInside(
         cursor: NSPoint,
         notchRect: NSRect,
         panelFrame: NSRect?,
+        panelWidth: CGFloat,
         screenFrame: NSRect,
         expanded: Bool
     ) -> Bool {
@@ -148,7 +176,12 @@ final class NotchHoverController {
         guard screenFrame.contains(cursor) else { return false }
         return hotZone(
             notchRect: notchRect,
-            panelFrame: panelFrame,
+            panelRect: visiblePanelRect(
+                screenFrame: screenFrame,
+                panelWidth: panelWidth,
+                dnkFrame: panelFrame,
+                notchRect: notchRect
+            ),
             screenFrame: screenFrame,
             expanded: expanded
         ).contains(cursor)
@@ -162,11 +195,15 @@ final class NotchHoverController {
 
     private var notchRect: () -> NSRect = { .zero }
     private var screenFrame: () -> NSRect = { .zero }
+    private var panelWidth: () -> CGFloat = { 0 }
     private var expandedFrame: () -> NSRect? = { nil }
     private var onEnter: () -> Bool = { false }
     private var onExit: () -> Void = {}
 
-    init(exitGrace: TimeInterval = 0.35, pollInterval: TimeInterval = 0.1) {
+    init(
+        exitGrace: TimeInterval = NotchHoverController.defaultExitGrace,
+        pollInterval: TimeInterval = 0.1
+    ) {
         self.exitGrace = exitGrace
         self.pollInterval = pollInterval
     }
@@ -178,6 +215,7 @@ final class NotchHoverController {
     func start(
         notchRect: @escaping () -> NSRect,
         screenFrame: @escaping () -> NSRect,
+        panelWidth: @escaping () -> CGFloat,
         expandedFrame: @escaping () -> NSRect?,
         onEnter: @escaping () -> Bool,
         onExit: @escaping () -> Void
@@ -186,6 +224,7 @@ final class NotchHoverController {
         timer = nil
         self.notchRect = notchRect
         self.screenFrame = screenFrame
+        self.panelWidth = panelWidth
         self.expandedFrame = expandedFrame
         self.onEnter = onEnter
         self.onExit = onExit
@@ -235,6 +274,7 @@ final class NotchHoverController {
             cursor: NSEvent.mouseLocation,
             notchRect: notchRect(),
             panelFrame: state.expanded ? cachedPanelFrame : nil,
+            panelWidth: panelWidth(),
             screenFrame: screenFrame(),
             expanded: state.expanded
         )

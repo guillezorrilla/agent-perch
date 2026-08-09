@@ -73,6 +73,7 @@ final class NotchHoverTests: XCTestCase {
             cursor: cursor,
             notchRect: notchRect,
             panelFrame: otherScreenPanel,
+            panelWidth: 500,
             screenFrame: screenFrame,
             expanded: true
         ))
@@ -83,7 +84,7 @@ final class NotchHoverTests: XCTestCase {
 
         XCTAssertEqual(NotchHoverController.hotZone(
             notchRect: notchRect,
-            panelFrame: otherScreenPanel,
+            panelRect: otherScreenPanel,
             screenFrame: screenFrame,
             expanded: true
         ), notchRect)
@@ -92,7 +93,7 @@ final class NotchHoverTests: XCTestCase {
     func testEmptyPanelFrameIsNotUnioned() {
         XCTAssertEqual(NotchHoverController.hotZone(
             notchRect: notchRect,
-            panelFrame: .zero,
+            panelRect: .zero,
             screenFrame: screenFrame,
             expanded: true
         ), notchRect)
@@ -102,9 +103,10 @@ final class NotchHoverTests: XCTestCase {
         let panel = NSRect(x: 300, y: 500, width: 400, height: 300)
 
         XCTAssertTrue(NotchHoverController.isInside(
-            cursor: NSPoint(x: 350, y: 600),
+            cursor: NSPoint(x: 350, y: 700),
             notchRect: notchRect,
             panelFrame: panel,
+            panelWidth: 400,
             screenFrame: screenFrame,
             expanded: true
         ))
@@ -266,6 +268,61 @@ extension NotchHoverTests {
     private var notchScreen: NSRect { NSRect(x: 0, y: 0, width: 1_512, height: 982) }
     private var auxLeft: NSRect { NSRect(x: 0, y: 945, width: 631, height: 37) }
     private var auxRight: NSRect { NSRect(x: 881, y: 945, width: 631, height: 37) }
+    private var oversizedPanel: NSRect { NSRect(x: 200, y: 400, width: 600, height: 400) }
+
+    func testCursorInsideOversizedWindowBelowVisiblePanelIsOutsideHotZone() {
+        XCTAssertFalse(NotchHoverController.isInside(
+            cursor: NSPoint(x: 500, y: 500),
+            notchRect: notchRect,
+            panelFrame: oversizedPanel,
+            panelWidth: 440,
+            screenFrame: screenFrame,
+            expanded: true
+        ))
+    }
+
+    func testCursorWithinCenteredPanelWidthBandIsInsideHotZone() {
+        XCTAssertTrue(NotchHoverController.isInside(
+            cursor: NSPoint(x: 500, y: 600),
+            notchRect: notchRect,
+            panelFrame: oversizedPanel,
+            panelWidth: 440,
+            screenFrame: screenFrame,
+            expanded: true
+        ))
+    }
+
+    func testLivePanelWidthChangesTheHotZoneBand() {
+        let cursor = NSPoint(x: 150, y: 600)
+
+        XCTAssertFalse(NotchHoverController.isInside(
+            cursor: cursor,
+            notchRect: notchRect,
+            panelFrame: oversizedPanel,
+            panelWidth: 440,
+            screenFrame: screenFrame,
+            expanded: true
+        ))
+        XCTAssertTrue(NotchHoverController.isInside(
+            cursor: cursor,
+            notchRect: notchRect,
+            panelFrame: oversizedPanel,
+            panelWidth: 800,
+            screenFrame: screenFrame,
+            expanded: true
+        ))
+    }
+
+    func testExpandedHotZoneStillIncludesNotchAtTopEdge() {
+        XCTAssertTrue(NotchHoverController.isInside(
+            cursor: NSPoint(x: 500, y: 800),
+            notchRect: notchRect,
+            panelFrame: oversizedPanel,
+            panelWidth: 440,
+            screenFrame: screenFrame,
+            expanded: true
+        ))
+    }
 
     func testNotchStripKeepsItsHeightWhenTheMenuBarAutoHides() {
         // Auto-hiding the menu bar drops safeAreaInsets.top and the menu bar height to 0 right
@@ -320,7 +377,7 @@ extension NotchHoverTests {
         XCTAssertEqual(
             NotchHoverController.hotZone(
                 notchRect: frame,
-                panelFrame: nil,
+                panelRect: nil,
                 screenFrame: notchScreen,
                 expanded: false
             ),
@@ -336,6 +393,7 @@ extension NotchHoverTests {
             cursor: NSPoint(x: 500, y: 800),
             notchRect: NSRect(x: 450, y: 770, width: 100, height: 30),
             panelFrame: nil,
+            panelWidth: 500,
             screenFrame: NSRect(x: 0, y: 0, width: 1_000, height: 800),
             expanded: false
         ))
@@ -344,6 +402,7 @@ extension NotchHoverTests {
             cursor: NSPoint(x: 1_500, y: 800),
             notchRect: NSRect(x: 450, y: 770, width: 100, height: 30),
             panelFrame: nil,
+            panelWidth: 500,
             screenFrame: NSRect(x: 0, y: 0, width: 1_000, height: 800),
             expanded: false
         ))

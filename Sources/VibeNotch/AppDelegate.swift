@@ -175,6 +175,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return NotchHoverController.notchFrame(on: screen)
             },
             screenFrame: { [weak self] in self?.selectedScreen()?.frame ?? .zero },
+            panelWidth: { [weak self] in CGFloat(self?.settings.panelWidth ?? 0) },
             expandedFrame: { [weak self] in self?.notch?.windowController?.window?.frame },
             onEnter: { [weak self] in self?.expandNotch() ?? false },
             onExit: { [weak self] in self?.restToBaseState() }
