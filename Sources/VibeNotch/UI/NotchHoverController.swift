@@ -89,8 +89,6 @@ final class NotchHoverController {
     }
 
     nonisolated static let defaultExitGrace: TimeInterval = 0.20
-    private nonisolated static let panelBottomOverreach: CGFloat = 180
-    private nonisolated static let minimumPanelHeight: CGFloat = 120
 
     // Pure state machine — the bug-prone part, unit-tested in isolation.
     nonisolated static func step(
@@ -135,34 +133,10 @@ final class NotchHoverController {
         return notchRect.union(panelRect.intersection(screenFrame))
     }
 
-    nonisolated static func visiblePanelRect(
-        screenFrame: NSRect,
-        panelWidth: CGFloat,
-        dnkFrame: NSRect?,
-        notchRect: NSRect
-    ) -> NSRect? {
-        let notchRect = notchRect.intersection(screenFrame)
-        guard !screenFrame.isEmpty,
-              !notchRect.isEmpty,
-              let dnkFrame,
-              !dnkFrame.isEmpty,
-              dnkFrame.intersects(screenFrame) else { return nil }
-        let width = min(max(panelWidth, 0), screenFrame.width)
-        guard width > 0 else { return nil }
-        let height = max(dnkFrame.height - panelBottomOverreach, minimumPanelHeight)
-        return NSRect(
-            x: screenFrame.midX - width / 2,
-            y: screenFrame.maxY - notchRect.height - height,
-            width: width,
-            height: height
-        ).intersection(screenFrame)
-    }
-
     nonisolated static func isInside(
         cursor: NSPoint,
         notchRect: NSRect,
-        panelFrame: NSRect?,
-        panelWidth: CGFloat,
+        panelRect: NSRect?,
         screenFrame: NSRect,
         expanded: Bool
     ) -> Bool {
@@ -176,12 +150,7 @@ final class NotchHoverController {
         guard screenFrame.contains(cursor) else { return false }
         return hotZone(
             notchRect: notchRect,
-            panelRect: visiblePanelRect(
-                screenFrame: screenFrame,
-                panelWidth: panelWidth,
-                dnkFrame: panelFrame,
-                notchRect: notchRect
-            ),
+            panelRect: panelRect,
             screenFrame: screenFrame,
             expanded: expanded
         ).contains(cursor)
@@ -189,14 +158,13 @@ final class NotchHoverController {
 
     private var timer: Timer?
     private var state = State()
-    private var cachedPanelFrame: NSRect?
+    private var cachedPanelRect: NSRect?
     private let exitGrace: TimeInterval
     private let pollInterval: TimeInterval
 
     private var notchRect: () -> NSRect = { .zero }
     private var screenFrame: () -> NSRect = { .zero }
-    private var panelWidth: () -> CGFloat = { 0 }
-    private var expandedFrame: () -> NSRect? = { nil }
+    private var panelRect: () -> NSRect? = { nil }
     private var onEnter: () -> Bool = { false }
     private var onExit: () -> Void = {}
 
@@ -215,8 +183,7 @@ final class NotchHoverController {
     func start(
         notchRect: @escaping () -> NSRect,
         screenFrame: @escaping () -> NSRect,
-        panelWidth: @escaping () -> CGFloat,
-        expandedFrame: @escaping () -> NSRect?,
+        panelRect: @escaping () -> NSRect?,
         onEnter: @escaping () -> Bool,
         onExit: @escaping () -> Void
     ) {
@@ -224,8 +191,7 @@ final class NotchHoverController {
         timer = nil
         self.notchRect = notchRect
         self.screenFrame = screenFrame
-        self.panelWidth = panelWidth
-        self.expandedFrame = expandedFrame
+        self.panelRect = panelRect
         self.onEnter = onEnter
         self.onExit = onExit
         let timer = Timer(timeInterval: pollInterval, repeats: true) { [weak self] _ in
@@ -239,27 +205,27 @@ final class NotchHoverController {
         timer?.invalidate()
         timer = nil
         state = State()
-        cachedPanelFrame = nil
+        cachedPanelRect = nil
     }
 
     // Called when the panel closes for a reason other than hover, so the next hover starts
     // from a clean slate instead of thinking it's still expanded.
     func resetExpanded() {
         state.forgetExpansion()
-        cachedPanelFrame = nil
+        cachedPanelRect = nil
     }
 
     // Called when the USER closed the panel (jump, permission decision, last session gone).
     func suppressUntilExit() {
         state.dismiss()
-        cachedPanelFrame = nil
+        cachedPanelRect = nil
     }
 
     // Called when something other than hover opened the panel (needs-action alert, tap on the
     // compact view, a mode re-apply under the cursor).
     func adoptExternalExpansion() {
         state.adoptExternalExpansion()
-        cachedPanelFrame = expandedFrame()
+        cachedPanelRect = panelRect()
     }
 
     /// Whether a user dismissal is still latched — i.e. the cursor has not left since. Hover
@@ -269,28 +235,26 @@ final class NotchHoverController {
     /// Whether the cursor is over the notch or the open panel right now. Callers use this to
     /// avoid yanking the panel out from under it on a timer or a mode re-apply.
     func isMouseInside() -> Bool {
-        refreshPanelFrame()
+        refreshPanelRect()
         return Self.isInside(
             cursor: NSEvent.mouseLocation,
             notchRect: notchRect(),
-            panelFrame: state.expanded ? cachedPanelFrame : nil,
-            panelWidth: panelWidth(),
+            panelRect: state.expanded ? cachedPanelRect : nil,
             screenFrame: screenFrame(),
             expanded: state.expanded
         )
     }
 
-    /// DynamicNotchKit tears its NSPanel down and rebuilds it on every screen-parameter change
-    /// (DynamicNotch.swift:144-153), so `window?.frame` is briefly nil while the panel is on
-    /// screen. Without this cache the hot zone would collapse to the bare notch mid-hover and
-    /// the exit grace would close the panel under the cursor.
-    private func refreshPanelFrame() {
+    /// DynamicNotchKit tears its view tree down and rebuilds it on every screen-parameter
+    /// change (DynamicNotch.swift:144-153), so measured geometry is briefly unavailable while
+    /// the panel is on screen. Keep the last real rect through that transition.
+    private func refreshPanelRect() {
         guard state.expanded else {
-            cachedPanelFrame = nil
+            cachedPanelRect = nil
             return
         }
-        if let frame = expandedFrame(), !frame.isEmpty {
-            cachedPanelFrame = frame
+        if let rect = panelRect(), !rect.isEmpty {
+            cachedPanelRect = rect
         }
     }
 
@@ -302,7 +266,7 @@ final class NotchHoverController {
             // tick tries again instead of pretending the panel is open.
             if !onEnter() { state.expanded = false }
         case .collapse:
-            cachedPanelFrame = nil
+            cachedPanelRect = nil
             onExit()
         case .none:
             break

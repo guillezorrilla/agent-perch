@@ -72,8 +72,7 @@ final class NotchHoverTests: XCTestCase {
         XCTAssertFalse(NotchHoverController.isInside(
             cursor: cursor,
             notchRect: notchRect,
-            panelFrame: otherScreenPanel,
-            panelWidth: 500,
+            panelRect: otherScreenPanel,
             screenFrame: screenFrame,
             expanded: true
         ))
@@ -105,8 +104,7 @@ final class NotchHoverTests: XCTestCase {
         XCTAssertTrue(NotchHoverController.isInside(
             cursor: NSPoint(x: 350, y: 700),
             notchRect: notchRect,
-            panelFrame: panel,
-            panelWidth: 400,
+            panelRect: panel,
             screenFrame: screenFrame,
             expanded: true
         ))
@@ -268,14 +266,14 @@ extension NotchHoverTests {
     private var notchScreen: NSRect { NSRect(x: 0, y: 0, width: 1_512, height: 982) }
     private var auxLeft: NSRect { NSRect(x: 0, y: 945, width: 631, height: 37) }
     private var auxRight: NSRect { NSRect(x: 881, y: 945, width: 631, height: 37) }
-    private var oversizedPanel: NSRect { NSRect(x: 200, y: 400, width: 600, height: 400) }
+    private var visiblePanel: NSRect { NSRect(x: 280, y: 550, width: 440, height: 220) }
+    private var smallPanel: NSRect { NSRect(x: 400, y: 620, width: 200, height: 150) }
 
     func testCursorInsideOversizedWindowBelowVisiblePanelIsOutsideHotZone() {
         XCTAssertFalse(NotchHoverController.isInside(
             cursor: NSPoint(x: 500, y: 500),
             notchRect: notchRect,
-            panelFrame: oversizedPanel,
-            panelWidth: 440,
+            panelRect: visiblePanel,
             screenFrame: screenFrame,
             expanded: true
         ))
@@ -285,29 +283,26 @@ extension NotchHoverTests {
         XCTAssertTrue(NotchHoverController.isInside(
             cursor: NSPoint(x: 500, y: 600),
             notchRect: notchRect,
-            panelFrame: oversizedPanel,
-            panelWidth: 440,
+            panelRect: visiblePanel,
             screenFrame: screenFrame,
             expanded: true
         ))
     }
 
-    func testLivePanelWidthChangesTheHotZoneBand() {
+    func testLivePanelRectChangesTheHotZoneBand() {
         let cursor = NSPoint(x: 150, y: 600)
 
         XCTAssertFalse(NotchHoverController.isInside(
             cursor: cursor,
             notchRect: notchRect,
-            panelFrame: oversizedPanel,
-            panelWidth: 440,
+            panelRect: visiblePanel,
             screenFrame: screenFrame,
             expanded: true
         ))
         XCTAssertTrue(NotchHoverController.isInside(
             cursor: cursor,
             notchRect: notchRect,
-            panelFrame: oversizedPanel,
-            panelWidth: 800,
+            panelRect: NSRect(x: 100, y: 550, width: 800, height: 220),
             screenFrame: screenFrame,
             expanded: true
         ))
@@ -317,8 +312,44 @@ extension NotchHoverTests {
         XCTAssertTrue(NotchHoverController.isInside(
             cursor: NSPoint(x: 500, y: 800),
             notchRect: notchRect,
-            panelFrame: oversizedPanel,
-            panelWidth: 440,
+            panelRect: visiblePanel,
+            screenFrame: screenFrame,
+            expanded: true
+        ))
+    }
+
+    func testCursorJustOutsideSmallRenderedPanelIsOutside() {
+        XCTAssertFalse(NotchHoverController.isInside(
+            cursor: NSPoint(x: 350, y: 700),
+            notchRect: notchRect,
+            panelRect: smallPanel,
+            screenFrame: screenFrame,
+            expanded: true
+        ))
+        XCTAssertFalse(NotchHoverController.isInside(
+            cursor: NSPoint(x: 500, y: 619),
+            notchRect: notchRect,
+            panelRect: smallPanel,
+            screenFrame: screenFrame,
+            expanded: true
+        ))
+    }
+
+    func testSmallRenderedPanelUnionsWithNotchAtSeam() {
+        XCTAssertEqual(smallPanel.maxY, notchRect.minY)
+        XCTAssertEqual(
+            NotchHoverController.hotZone(
+                notchRect: notchRect,
+                panelRect: smallPanel,
+                screenFrame: screenFrame,
+                expanded: true
+            ),
+            notchRect.union(smallPanel)
+        )
+        XCTAssertTrue(NotchHoverController.isInside(
+            cursor: NSPoint(x: 500, y: notchRect.minY),
+            notchRect: notchRect,
+            panelRect: smallPanel,
             screenFrame: screenFrame,
             expanded: true
         ))
@@ -392,8 +423,7 @@ extension NotchHoverTests {
         XCTAssertTrue(NotchHoverController.isInside(
             cursor: NSPoint(x: 500, y: 800),
             notchRect: NSRect(x: 450, y: 770, width: 100, height: 30),
-            panelFrame: nil,
-            panelWidth: 500,
+            panelRect: nil,
             screenFrame: NSRect(x: 0, y: 0, width: 1_000, height: 800),
             expanded: false
         ))
@@ -401,8 +431,7 @@ extension NotchHoverTests {
         XCTAssertFalse(NotchHoverController.isInside(
             cursor: NSPoint(x: 1_500, y: 800),
             notchRect: NSRect(x: 450, y: 770, width: 100, height: 30),
-            panelFrame: nil,
-            panelWidth: 500,
+            panelRect: nil,
             screenFrame: NSRect(x: 0, y: 0, width: 1_000, height: 800),
             expanded: false
         ))
