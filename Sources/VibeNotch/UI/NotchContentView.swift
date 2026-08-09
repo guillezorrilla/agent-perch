@@ -22,7 +22,6 @@ struct NotchContentView: View {
     let jumper: Jumper
     let actionInjector: ActionInjector
     let actions: NotchActions
-    let onPanelRectChange: (NSRect) -> Void
 
     var body: some View {
         Group {
@@ -66,13 +65,6 @@ struct NotchContentView: View {
                     .frame(width: CGFloat(settings.panelWidth))
                     .frame(minHeight: 52)
                     .background(Color.black)
-            }
-        }
-        .background {
-            GeometryReader { geometry in
-                PanelBoundsReader(onChange: onPanelRectChange)
-                    .frame(width: geometry.size.width, height: geometry.size.height)
-                    .allowsHitTesting(false)
             }
         }
         .onChange(of: store.sessions.count) { _, count in
@@ -125,52 +117,6 @@ struct NotchContentView: View {
 
     private func jump(to session: AgentSession) {
         if jumper.jump(session) { actions.collapse() }
-    }
-}
-
-private struct PanelBoundsReader: NSViewRepresentable {
-    let onChange: (NSRect) -> Void
-
-    func makeNSView(context: Context) -> PanelBoundsView {
-        PanelBoundsView(onChange: onChange)
-    }
-
-    func updateNSView(_ view: PanelBoundsView, context: Context) {
-        view.onChange = onChange
-        view.reportBounds()
-    }
-}
-
-private final class PanelBoundsView: NSView {
-    var onChange: (NSRect) -> Void
-    private var lastRect: NSRect?
-
-    init(onChange: @escaping (NSRect) -> Void) {
-        self.onChange = onChange
-        super.init(frame: .zero)
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) is unavailable")
-    }
-
-    override func layout() {
-        super.layout()
-        reportBounds()
-    }
-
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        reportBounds()
-    }
-
-    func reportBounds() {
-        guard let window, !bounds.isEmpty else { return }
-        let rect = window.convertToScreen(convert(bounds, to: nil))
-        guard !rect.isEmpty, rect != lastRect else { return }
-        lastRect = rect
-        onChange(rect)
     }
 }
 

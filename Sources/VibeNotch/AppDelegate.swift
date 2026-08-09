@@ -19,7 +19,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: StatusItemController?
     private var autoCollapseTask: Task<Void, Never>?
     private var displayChangeTask: Task<Void, Never>?
-    private var panelRect: NSRect?
     /// Geometry the current mode was applied for. `didChangeScreenParameters` also fires for
     /// wallpaper, Space and menu-bar changes; re-applying on those would restart the hover
     /// controller under the user's cursor for nothing.
@@ -40,8 +39,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 settings: self.settings,
                 jumper: self.jumper,
                 actionInjector: self.actionInjector,
-                actions: self.actions,
-                onPanelRectChange: { [weak self] in self?.panelRect = $0 }
+                actions: self.actions
             )
         } compactLeading: {
             CompactLeadingView(store: self.store, actions: self.actions)
@@ -177,7 +175,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return NotchHoverController.notchFrame(on: screen)
             },
             screenFrame: { [weak self] in self?.selectedScreen()?.frame ?? .zero },
-            panelRect: { [weak self] in self?.panelRect },
+            // DynamicNotchKit's own hover truth: SwiftUI `.onHover` over the rendered panel,
+            // set only while it is visible. Correct in any coordinate space, on any screen, in
+            // both the notch and floating (clamshell) styles — which a re-derived rect was not.
+            panelHovered: { [weak self] in self?.notch?.isHovering ?? false },
             onEnter: { [weak self] in self?.expandNotch() ?? false },
             onExit: { [weak self] in self?.restToBaseState() }
         )
