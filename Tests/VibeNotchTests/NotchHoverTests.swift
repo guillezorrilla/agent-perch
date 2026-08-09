@@ -110,3 +110,24 @@ final class NotchHoverTests: XCTestCase {
         ))
     }
 }
+
+extension NotchHoverTests {
+    func testCursorPinnedAtTopEdgeInsideNotchCountsAsInside() {
+        // In the physical notch the OS reports y == screen maxY exactly.
+        XCTAssertTrue(NotchHoverController.isInside(
+            cursor: NSPoint(x: 500, y: 800),
+            notchRect: NSRect(x: 450, y: 770, width: 100, height: 30),
+            panelFrame: nil,
+            screenFrame: NSRect(x: 0, y: 0, width: 1_000, height: 800),
+            expanded: false
+        ))
+        // But the top edge of a DIFFERENT screen's x-range stays outside.
+        XCTAssertFalse(NotchHoverController.isInside(
+            cursor: NSPoint(x: 1_500, y: 800),
+            notchRect: NSRect(x: 450, y: 770, width: 100, height: 30),
+            panelFrame: nil,
+            screenFrame: NSRect(x: 0, y: 0, width: 1_000, height: 800),
+            expanded: false
+        ))
+    }
+}

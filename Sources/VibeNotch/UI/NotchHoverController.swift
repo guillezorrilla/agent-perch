@@ -97,6 +97,13 @@ final class NotchHoverController {
         screenFrame: NSRect,
         expanded: Bool
     ) -> Bool {
+        // A cursor inside the physical notch is pinned to the screen's top edge and
+        // reports y == maxY — which half-open NSRect.contains EXCLUDES. Nudge it in,
+        // or hovering the notch itself reads as "outside" and flickers.
+        var cursor = cursor
+        if cursor.y >= screenFrame.maxY, cursor.y <= screenFrame.maxY + 1 {
+            cursor.y = screenFrame.maxY - 0.5
+        }
         guard screenFrame.contains(cursor) else { return false }
         return hotZone(
             notchRect: notchRect,
