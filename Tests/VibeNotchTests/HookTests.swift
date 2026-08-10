@@ -95,7 +95,7 @@ final class HookTests: XCTestCase {
             if eventName == "PreToolUse" {
                 XCTAssertEqual(
                     entries[0]["matcher"] as? String,
-                    "Edit|MultiEdit|Write|Bash|NotebookEdit|ExitPlanMode"
+                    "Edit|MultiEdit|Write|Bash|NotebookEdit|ExitPlanMode|AskUserQuestion"
                 )
             } else {
                 XCTAssertNil(entries[0]["matcher"])
@@ -158,7 +158,7 @@ final class HookTests: XCTestCase {
         XCTAssertEqual(entries.count, 1)
         XCTAssertEqual(
             entries[0]["matcher"] as? String,
-            "Edit|MultiEdit|Write|Bash|NotebookEdit|ExitPlanMode"
+            "Edit|MultiEdit|Write|Bash|NotebookEdit|ExitPlanMode|AskUserQuestion"
         )
     }
 
