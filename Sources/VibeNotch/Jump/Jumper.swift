@@ -41,16 +41,24 @@ final class Jumper {
 
     static func rung(
         for cwd: String,
-        preferredTTY: String?,
+        preferredTTY: String? = nil,
+        agentName: String = "Claude",
         processes: [ClaudeProcess]
     ) -> JumpRung {
         if let preferredTTY, !preferredTTY.isEmpty, preferredTTY != "??" {
             return .exactFocus(tty: preferredTTY)
         }
-        if let tty = TTYResolver.tty(for: cwd, in: processes) {
+        if let tty = TTYResolver.tty(for: cwd, agentName: agentName, in: processes) {
             return .exactFocus(tty: tty)
         }
         return .newTab
+    }
+
+    /// `codex resume <id>` — Codex's reopen command when no live process is found for the
+    /// session. The id is always a UUID today, but shell-quoting it keeps the composed
+    /// command safe regardless.
+    static func codexResumeCommand(sessionId: String) -> String {
+        "codex resume \(AppleScriptRunner.shellQuote(sessionId))"
     }
 
     static func routeWarpJump(
@@ -68,13 +76,13 @@ final class Jumper {
     func jump(_ session: AgentSession) -> Bool {
         let processes = resolver.processes()
         let match = processes.first {
-            TTYResolver.isClaudeCLI(command: $0.command)
+            TTYResolver.isAgentCLI(session.agentName, command: $0.command)
                 && $0.cwd == session.cwd
                 && $0.tty?.isEmpty == false
                 && $0.tty != "??"
         }
         // Prefer the terminal the session actually runs in: hook-provided name, else
-        // resolve it by walking the live claude process's ancestry.
+        // resolve it by walking the live agent process's ancestry.
         let terminal = (session.terminalName
             ?? match.flatMap { terminalResolver.terminalName(for: $0.pid) })?.lowercased()
 
@@ -83,11 +91,11 @@ final class Jumper {
                 cwd: session.cwd,
                 locate: { warpTabLocator.tabIndex(forCwd: $0) },
                 focus: { warpFocuser.focus(tabIndex: $0) },
-                fallback: { openNewTab(at: session.cwd, preferring: terminal) }
+                fallback: { openNewTab(at: session.cwd, preferring: terminal, resumeCommand: session.resumeCommand) }
             )
         }
 
-        // Hook tty, else live claude tty, else any shell still sitting at the cwd —
+        // Hook tty, else live agent tty, else any shell still sitting at the cwd —
         // the user's open tab after the agent exited (#10).
         let tty = (session.tty?.isEmpty == false ? session.tty : nil)
             ?? match?.tty
@@ -95,7 +103,7 @@ final class Jumper {
         if let tty, tty != "??", Self.canExactFocus(terminal), focus(tty: tty) {
             return true
         }
-        return openNewTab(at: session.cwd, preferring: terminal)
+        return openNewTab(at: session.cwd, preferring: terminal, resumeCommand: session.resumeCommand)
     }
 
     @MainActor
@@ -147,17 +155,26 @@ final class Jumper {
     // iTerm's `command` parameter execs WITHOUT a shell — `cd x; exec y` word-splits and
     // dies (#10). Wrap it in an explicit shell; Terminal.app's `do script` already types
     // into a shell, so it takes the inner command as-is.
-    static func newTabShellCommand(cwd: String) -> String {
-        let inner = "cd -- \(AppleScriptRunner.shellQuote(cwd)); exec \"${SHELL:-/bin/zsh}\" -l"
-        return "/bin/zsh -lc \(AppleScriptRunner.shellQuote(inner))"
+    static func newTabShellCommand(cwd: String, resumeCommand: String? = nil) -> String {
+        "/bin/zsh -lc \(AppleScriptRunner.shellQuote(Self.newTabInnerCommand(cwd: cwd, resumeCommand: resumeCommand)))"
+    }
+
+    /// `resumeCommand` (e.g. `codex resume <id>`) replaces the plain login-shell relaunch when
+    /// the session's own agent knows how to reopen itself; `nil` (Claude, today) keeps the
+    /// original "just drop me at the cwd" behavior byte-identical.
+    private static func newTabInnerCommand(cwd: String, resumeCommand: String?) -> String {
+        let launch = resumeCommand ?? "exec \"${SHELL:-/bin/zsh}\" -l"
+        return "cd -- \(AppleScriptRunner.shellQuote(cwd)); \(launch)"
     }
 
     @MainActor
-    private func openNewTab(at cwd: String, preferring terminal: String?) -> Bool {
+    private func openNewTab(at cwd: String, preferring terminal: String?, resumeCommand: String? = nil) -> Bool {
         let command = AppleScriptRunner.stringLiteral(
-            "cd -- \(AppleScriptRunner.shellQuote(cwd)); exec \"${SHELL:-/bin/zsh}\" -l"
+            Self.newTabInnerCommand(cwd: cwd, resumeCommand: resumeCommand)
         )
-        let shellWrapped = AppleScriptRunner.stringLiteral(Self.newTabShellCommand(cwd: cwd))
+        let shellWrapped = AppleScriptRunner.stringLiteral(
+            Self.newTabShellCommand(cwd: cwd, resumeCommand: resumeCommand)
+        )
 
         for opener in Self.openerOrder(preferring: terminal) {
             switch opener {

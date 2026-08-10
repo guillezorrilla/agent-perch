@@ -12,7 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let actionInjector = ActionInjector()
     private let hoverController = NotchHoverController()
     private let cardShortcuts = CardShortcutMonitor()
-    private var projectsWatcher: ClaudeProjectsWatcher?
+    private var sessionsWatcher: PathWatcher?
     private var spoolWatcher: SpoolWatcher?
     private var notch: DynamicNotch<NotchContentView, CompactLeadingView, CompactTrailingView>?
     private var notifier: SessionNotifier?
@@ -76,10 +76,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             notifier?.handle(transition, soundsEnabled: settings.soundsEnabled)
         }
 
-        projectsWatcher = ClaudeProjectsWatcher(directoryURL: store.projectsDirectory) { [weak store] in
+        // One FSEvents watcher across every agent source: Claude's projects directory, plus
+        // Codex's sessions directory and session index. Generalized from the original
+        // Claude-only watcher so a third agent (#11) just adds its paths to this list.
+        sessionsWatcher = PathWatcher(directoryURLs: [
+            store.projectsDirectory,
+            store.codexHome.appendingPathComponent("sessions", isDirectory: true),
+            store.codexHome.appendingPathComponent("session_index.jsonl", isDirectory: false)
+        ]) { [weak store] in
             Task { @MainActor in store?.refresh() }
         }
-        projectsWatcher?.start()
+        sessionsWatcher?.start()
 
         let eventsDirectory = settings.applicationSupportDirectory
             .appendingPathComponent("events", isDirectory: true)
@@ -107,7 +114,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         autoCollapseTask?.cancel()
         displayChangeTask?.cancel()
         NotificationCenter.default.removeObserver(self)
-        projectsWatcher?.stop()
+        sessionsWatcher?.stop()
         spoolWatcher?.stop()
         hoverController.stop()
         cardShortcuts.stop()

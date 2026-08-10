@@ -12,70 +12,40 @@ final class SessionStore: ObservableObject {
     var onTransition: ((SessionTransition) -> Void)?
 
     let projectsDirectory: URL
-    private let fileManager: FileManager
+    let codexHome: URL
+    private let sources: [AgentSessionSource]
     private let processProvider: () -> [ClaudeProcess]
     private let terminalResolver: TerminalNameResolver
-    private var fileSessions: [String: FileSession] = [:]
+    private var discoveredSessions: [String: DiscoveredSession] = [:]
     private var hookStates: [String: HookState] = [:]
 
     init(
         projectsDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/projects", isDirectory: true),
+        codexHome: URL = CodexSessionSource.defaultCodexHome(),
+        sources: [AgentSessionSource]? = nil,
         fileManager: FileManager = .default,
         processProvider: @escaping () -> [ClaudeProcess] = { TTYResolver().processes() },
         terminalResolver: TerminalNameResolver = TerminalNameResolver()
     ) {
         self.projectsDirectory = projectsDirectory
-        self.fileManager = fileManager
+        self.codexHome = codexHome
+        self.sources = sources ?? [
+            ClaudeSessionSource(projectsDirectory: projectsDirectory, fileManager: fileManager),
+            CodexSessionSource(codexHome: codexHome, fileManager: fileManager)
+        ]
         self.processProvider = processProvider
         self.terminalResolver = terminalResolver
     }
 
     func refresh(now: Date = Date()) {
-        var discovered: [String: FileSession] = [:]
-        let keys: Set<URLResourceKey> = [.isDirectoryKey]
-        let projectDirectories = (try? fileManager.contentsOfDirectory(
-            at: projectsDirectory,
-            includingPropertiesForKeys: Array(keys),
-            options: [.skipsHiddenFiles]
-        )) ?? []
-
-        for projectDirectory in projectDirectories {
-            guard (try? projectDirectory.resourceValues(forKeys: keys).isDirectory) == true else {
-                continue
-            }
-
-            let cwd = ClaudeProjectPathDecoder.decode(
-                projectDirectory.lastPathComponent,
-                exists: fileManager.fileExists(atPath:)
-            )
-            let fileKeys: Set<URLResourceKey> = [.isRegularFileKey, .contentModificationDateKey]
-            let files = (try? fileManager.contentsOfDirectory(
-                at: projectDirectory,
-                includingPropertiesForKeys: Array(fileKeys),
-                options: [.skipsHiddenFiles]
-            )) ?? []
-
-            for file in files where file.pathExtension == "jsonl" {
-                guard let values = try? file.resourceValues(forKeys: fileKeys),
-                      values.isRegularFile == true,
-                      let modifiedAt = values.contentModificationDate,
-                      let status = SessionStatus.at(modifiedAt: modifiedAt, now: now) else {
-                    continue
-                }
-                let id = file.deletingPathExtension().lastPathComponent
-                if discovered[id]?.modifiedAt ?? .distantPast < modifiedAt {
-                    discovered[id] = FileSession(
-                        cwd: cwd,
-                        modifiedAt: modifiedAt,
-                        status: status,
-                        fileURL: file
-                    )
-                }
+        var discovered: [String: DiscoveredSession] = [:]
+        for source in sources {
+            for session in source.discover(now: now) {
+                discovered[session.sessionId] = session
             }
         }
-
-        fileSessions = discovered
+        discoveredSessions = discovered
         reconcile(now: now)
     }
 
@@ -165,24 +135,27 @@ final class SessionStore: ObservableObject {
     }
 
     private func reconcile(now: Date) {
-        let ids = Set(fileSessions.keys).union(hookStates.keys)
+        let ids = Set(discoveredSessions.keys).union(hookStates.keys)
         let processes = ids.isEmpty ? [] : processProvider()
         sessions = ids.compactMap { sessionID -> AgentSession? in
-            let file = fileSessions[sessionID]
-            let hook = hookStates[sessionID]
+            let discovered = discoveredSessions[sessionID]
+            let agentName = discovered?.agentName ?? "Claude"
+            // Hook events are Claude-only — a Codex (or future-agent) session must never pick
+            // up hook state, even if some future id collision made the lookup succeed.
+            let hook = agentName == "Claude" ? hookStates[sessionID] : nil
             let hookWins = hook.map {
-                file == nil || Self.isAtLeastAsFresh($0.updatedAt, as: file!.modifiedAt)
+                discovered == nil || Self.isAtLeastAsFresh($0.updatedAt, as: discovered!.lastActivity)
             } ?? false
 
             if let hook, hook.status == .ended,
                now.timeIntervalSince(hook.updatedAt) >= 30,
-               file == nil || Self.isAtLeastAsFresh(hook.updatedAt, as: file!.modifiedAt) {
+               discovered == nil || Self.isAtLeastAsFresh(hook.updatedAt, as: discovered!.lastActivity) {
                 return nil
             }
 
-            guard let status = hookWins ? hook?.status : file?.status else { return nil }
-            let cwd = file?.cwd ?? hook?.cwd ?? ""
-            let modifiedAt = hookWins ? hook!.updatedAt : file!.modifiedAt
+            guard let status = hookWins ? hook?.status : discovered?.status else { return nil }
+            let cwd = discovered?.cwd ?? hook?.cwd ?? ""
+            let modifiedAt = hookWins ? hook!.updatedAt : discovered!.lastActivity
             let tty = hook?.tty
             let process = processes.first {
                 if let tty { return $0.tty == tty || $0.tty == "/dev/\(tty)" }
@@ -191,17 +164,19 @@ final class SessionStore: ObservableObject {
             let jumpRung = Jumper.rung(
                 for: cwd,
                 preferredTTY: tty,
+                agentName: agentName,
                 processes: processes
             )
 
             return AgentSession(
                 sessionId: sessionID,
+                agentName: agentName,
                 cwd: cwd,
                 modifiedAt: modifiedAt,
                 status: status,
                 jumpRung: jumpRung,
-                title: SessionTitle.resolve(
-                    sessionFileURL: file?.fileURL,
+                title: discovered?.title ?? SessionTitle.resolve(
+                    sessionFileURL: discovered?.sessionFileURL,
                     lastPrompt: hook?.lastPrompt,
                     cwd: cwd
                 ),
@@ -211,7 +186,8 @@ final class SessionStore: ObservableObject {
                 currentActivity: hookWins ? hook?.currentActivity : nil,
                 notificationMessage: hook?.notificationMessage,
                 pendingToolName: hook?.pendingToolName,
-                pendingToolInput: hook?.pendingToolInput
+                pendingToolInput: hook?.pendingToolInput,
+                resumeCommand: discovered?.resumeCommand
             )
         }.sorted {
             if ($0.status == .needsAction) != ($1.status == .needsAction) {
@@ -223,13 +199,6 @@ final class SessionStore: ObservableObject {
 
     private static func isAtLeastAsFresh(_ hookDate: Date, as fileDate: Date) -> Bool {
         floor(hookDate.timeIntervalSince1970) >= floor(fileDate.timeIntervalSince1970)
-    }
-
-    private struct FileSession {
-        let cwd: String
-        let modifiedAt: Date
-        let status: SessionStatus
-        let fileURL: URL
     }
 
     private struct HookState {

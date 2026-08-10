@@ -18,6 +18,7 @@ enum SessionStatus: Equatable, Sendable {
 
 struct AgentSession: Identifiable, Equatable, Sendable {
     let sessionId: String
+    let agentName: String
     let cwd: String
     let modifiedAt: Date
     let status: SessionStatus
@@ -30,6 +31,9 @@ struct AgentSession: Identifiable, Equatable, Sendable {
     let notificationMessage: String?
     let pendingToolName: String?
     let pendingToolInput: JSONValue?
+    /// How to reopen this session when no live process/tty is found for it. `nil` means a
+    /// plain shell at `cwd` is enough (Claude); Codex supplies `codex resume <id>`.
+    let resumeCommand: String?
 
     var id: String { sessionId }
 

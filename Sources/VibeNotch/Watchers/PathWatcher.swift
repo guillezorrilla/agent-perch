@@ -1,60 +1,29 @@
 import CoreServices
 import Foundation
 
-enum ClaudeProjectPathDecoder {
-    static func decode(
-        _ encoded: String,
-        exists: (String) -> Bool = FileManager.default.fileExists(atPath:)
-    ) -> String {
-        guard encoded.hasPrefix("-") else { return encoded }
-
-        let pieces = encoded.dropFirst().split(
-            separator: "-",
-            omittingEmptySubsequences: false
-        ).map(String.init)
-
-        func resolve(from index: Int, beneath parent: String) -> String? {
-            guard index < pieces.count else { return exists(parent) ? parent : nil }
-
-            var component = ""
-            for end in index..<pieces.count {
-                if end > index { component += "-" }
-                component += pieces[end]
-                guard !component.isEmpty else { continue }
-
-                let candidate = parent == "/"
-                    ? "/\(component)"
-                    : "\(parent)/\(component)"
-                if exists(candidate),
-                   let resolved = resolve(from: end + 1, beneath: candidate) {
-                    return resolved
-                }
-            }
-            return nil
-        }
-
-        return resolve(from: 0, beneath: "/") ?? encoded
-    }
-}
-
-private let claudeProjectsEventCallback: FSEventStreamCallback = {
+private let pathWatcherEventCallback: FSEventStreamCallback = {
     _, clientInfo, _, _, _, _ in
     guard let clientInfo else { return }
-    Unmanaged<ClaudeProjectsWatcher>
+    Unmanaged<PathWatcher>
         .fromOpaque(clientInfo)
         .takeUnretainedValue()
         .scheduleRefresh()
 }
 
-final class ClaudeProjectsWatcher: @unchecked Sendable {
-    private let directoryURL: URL
+/// Watches a fixed set of paths (directories or individual files) for changes via FSEvents,
+/// generalized from the original Claude-projects-only watcher so the same mechanism covers
+/// every agent source (Claude's `~/.claude/projects`, Codex's `sessions/` directory and
+/// `session_index.jsonl`, and whatever a future agent adds). One FSEventStream root list
+/// covers all of them — no need for one stream per path.
+final class PathWatcher: @unchecked Sendable {
+    private let paths: [URL]
     private let onChange: () -> Void
     private var stream: FSEventStreamRef?
     private var pollTimer: DispatchSourceTimer?
     private var debounceWorkItem: DispatchWorkItem?
 
-    init(directoryURL: URL, onChange: @escaping () -> Void) {
-        self.directoryURL = directoryURL
+    init(directoryURLs: [URL], onChange: @escaping () -> Void) {
+        self.paths = directoryURLs
         self.onChange = onChange
     }
 
@@ -91,9 +60,13 @@ final class ClaudeProjectsWatcher: @unchecked Sendable {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: workItem)
     }
 
+    /// Only the paths that exist yet can be handed to FSEvents; a path that appears later
+    /// (e.g. `~/.codex` before Codex has ever run) is still covered by the 30s poll above,
+    /// which calls `onChange()` unconditionally regardless of stream state.
     private func startEventStreamIfPossible() {
-        guard stream == nil,
-              FileManager.default.fileExists(atPath: directoryURL.path) else { return }
+        guard stream == nil else { return }
+        let existingPaths = paths.filter { FileManager.default.fileExists(atPath: $0.path) }
+        guard !existingPaths.isEmpty else { return }
 
         var context = FSEventStreamContext(
             version: 0,
@@ -108,9 +81,9 @@ final class ClaudeProjectsWatcher: @unchecked Sendable {
 
         guard let stream = FSEventStreamCreate(
             kCFAllocatorDefault,
-            claudeProjectsEventCallback,
+            pathWatcherEventCallback,
             &context,
-            [directoryURL.path] as CFArray,
+            existingPaths.map(\.path) as CFArray,
             FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
             0.2,
             flags

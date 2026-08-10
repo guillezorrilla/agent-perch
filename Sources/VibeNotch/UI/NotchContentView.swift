@@ -197,7 +197,7 @@ struct CompactLeadingView: View {
                 .onTapGesture { actions.expand() }
                 .onHover { if $0 { actions.hoverExpand() } }
                 .accessibilityElement(children: .combine)
-                .accessibilityLabel("\(session.title), show Claude sessions")
+                .accessibilityLabel("\(session.title), show agent sessions")
             }
         }
     }
@@ -230,7 +230,7 @@ struct CompactTrailingView: View {
                     .contentShape(Rectangle())
                     .onTapGesture { actions.expand() }
                     .onHover { if $0 { actions.hoverExpand() } }
-                    .accessibilityLabel("\(store.sessions.count) Claude sessions")
+                    .accessibilityLabel("\(store.sessions.count) agent sessions")
                     .accessibilityHint("Show session list")
             }
         }

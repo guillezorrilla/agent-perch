@@ -148,3 +148,38 @@ extension SessionTitleTests {
         XCTAssertEqual(SessionTitle.displayablePrompt(wrapped), "please fix hover")
     }
 }
+
+final class CodexSessionTitleTests: XCTestCase {
+    func testUsesThreadNameWhenItLooksLikeARealTitle() {
+        XCTAssertEqual(
+            SessionTitle.resolveCodex(threadName: "Fix the flaky test", cwd: "/Users/me/project"),
+            "Fix the flaky test"
+        )
+    }
+
+    func testFallsBackToCwdBasenameWhenThreadNameIsMissingOrEmpty() {
+        XCTAssertEqual(SessionTitle.resolveCodex(threadName: nil, cwd: "/Users/me/project"), "project")
+        XCTAssertEqual(SessionTitle.resolveCodex(threadName: "", cwd: "/Users/me/project"), "project")
+        XCTAssertEqual(SessionTitle.resolveCodex(threadName: "   ", cwd: "/Users/me/project"), "project")
+    }
+
+    func testFallsBackToCwdBasenameWhenThreadNameIsJustAPath() {
+        XCTAssertEqual(
+            SessionTitle.resolveCodex(threadName: "/Users/me/project", cwd: "/Users/me/project"),
+            "project"
+        )
+        XCTAssertEqual(
+            SessionTitle.resolveCodex(threadName: "~/project", cwd: "/Users/me/project"),
+            "project"
+        )
+    }
+
+    func testNonPathCwdIsReturnedVerbatimAsFallback() {
+        XCTAssertEqual(SessionTitle.resolveCodex(threadName: nil, cwd: "some-cwd"), "some-cwd")
+    }
+
+    func testTruncatesLongThreadNamesToSixtyCharacters() {
+        let long = String(repeating: "a", count: 100)
+        XCTAssertEqual(SessionTitle.resolveCodex(threadName: long, cwd: "/tmp").count, 60)
+    }
+}

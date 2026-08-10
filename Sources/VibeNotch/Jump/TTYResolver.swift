@@ -8,8 +8,11 @@ struct ClaudeProcess: Equatable, Sendable {
 }
 
 struct TTYResolver {
+    // pgrep's `-f` pattern is an extended regex, so "claude|codex" matches either binary's
+    // command line in one call; each candidate line is still re-validated below by the
+    // agent-specific CLI check (same as today for Claude alone).
     func processes() -> [ClaudeProcess] {
-        guard let listing = Self.output("/usr/bin/pgrep", ["-fl", "claude"]) else {
+        guard let listing = Self.output("/usr/bin/pgrep", ["-fl", "claude|codex"]) else {
             return []
         }
 
@@ -17,7 +20,7 @@ struct TTYResolver {
             let fields = line.split(maxSplits: 1, whereSeparator: \.isWhitespace)
             guard fields.count == 2,
                   let pid = Int32(fields[0]),
-                  Self.isClaudeCLI(command: String(fields[1])),
+                  Self.isClaudeCLI(command: String(fields[1])) || Self.isCodexCLI(command: String(fields[1])),
                   let cwd = cwd(for: pid) else { return nil }
 
             return ClaudeProcess(
@@ -29,13 +32,22 @@ struct TTYResolver {
         }
     }
 
-    static func tty(for cwd: String, in processes: [ClaudeProcess]) -> String? {
+    static func tty(for cwd: String, agentName: String = "Claude", in processes: [ClaudeProcess]) -> String? {
         processes.first {
-            isClaudeCLI(command: $0.command)
+            isAgentCLI(agentName, command: $0.command)
                 && $0.cwd == cwd
                 && $0.tty?.isEmpty == false
                 && $0.tty != "??"
         }?.tty
+    }
+
+    /// Dispatches to the right agent's CLI check by name, defaulting to Claude's rules — the
+    /// same default every call site already assumed before Codex existed.
+    static func isAgentCLI(_ agentName: String, command: String) -> Bool {
+        switch agentName {
+        case "Codex": return isCodexCLI(command: command)
+        default: return isClaudeCLI(command: command)
+        }
     }
 
     static func isClaudeCLI(command: String) -> Bool {
@@ -51,6 +63,15 @@ struct TTYResolver {
             || executableName == "claude-code"
             || command.contains("/.local/share/claude/versions/")
             || command.contains("/@anthropic-ai/claude-code/")
+    }
+
+    static func isCodexCLI(command: String) -> Bool {
+        let command = command.lowercased()
+        guard command.contains("codex") else { return false }
+
+        let executable = command.split(whereSeparator: \.isWhitespace).first.map(String.init) ?? ""
+        let executableName = URL(fileURLWithPath: executable).lastPathComponent
+        return executableName == "codex"
     }
 
     // Fallback when no live claude process matches: any shell sitting at the session's

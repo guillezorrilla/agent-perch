@@ -40,6 +40,22 @@ enum SessionTitle {
         return cwd.hasPrefix("/") ? URL(fileURLWithPath: cwd).lastPathComponent : cwd
     }
 
+    /// Codex has no transcript metadata or hook-provided prompt to fall back on — just the
+    /// session index's `thread_name` (when it looks like a real title, not a stored path) and
+    /// the cwd basename.
+    static func resolveCodex(threadName: String?, cwd: String) -> String {
+        if let threadName, isUsableThreadName(threadName) {
+            return String(threadName.prefix(60))
+        }
+        return cwd.hasPrefix("/") ? URL(fileURLWithPath: cwd).lastPathComponent : cwd
+    }
+
+    private static func isUsableThreadName(_ value: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        return !trimmed.hasPrefix("/") && !trimmed.hasPrefix("~/")
+    }
+
     // Harness-generated turns (task notifications, system reminders, slash-command
     // wrappers) arrive through the UserPromptSubmit hook too — they are not something
     // the user typed and make terrible titles ("<task-notification>…").

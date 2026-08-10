@@ -139,6 +139,7 @@ final class SessionTransitionTests: XCTestCase {
     func testHookStateTransitionsAndEndedGraceRemoval() throws {
         let store = SessionStore(
             projectsDirectory: temporaryDirectory(),
+            codexHome: temporaryDirectory(),
             processProvider: { [] }
         )
 
@@ -209,7 +210,11 @@ final class SessionTransitionTests: XCTestCase {
             [.modificationDate: Date(timeIntervalSince1970: 200)],
             ofItemAtPath: sessionFile.path
         )
-        let store = SessionStore(projectsDirectory: projects, processProvider: { [] })
+        let store = SessionStore(
+            projectsDirectory: projects,
+            codexHome: temporaryDirectory(),
+            processProvider: { [] }
+        )
 
         try send(to: store,
             "Notification",
@@ -232,7 +237,11 @@ final class SessionTransitionTests: XCTestCase {
             [.modificationDate: Date(timeIntervalSince1970: 100.9)],
             ofItemAtPath: sessionFile.path
         )
-        let store = SessionStore(projectsDirectory: projects, processProvider: { [] })
+        let store = SessionStore(
+            projectsDirectory: projects,
+            codexHome: temporaryDirectory(),
+            processProvider: { [] }
+        )
         store.refresh(now: Date(timeIntervalSince1970: 101))
 
         try send(to: store,
