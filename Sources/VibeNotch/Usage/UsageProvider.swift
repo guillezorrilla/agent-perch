@@ -2,6 +2,7 @@ import Combine
 import Foundation
 
 struct UsageWindow: Equatable, Sendable {
+    let label: String
     let utilization: Double
     let resetsAt: Date
 
@@ -28,18 +29,33 @@ enum UsageLevel: Equatable, Sendable {
     case high
 }
 
-struct UsageSnapshot: Equatable, Sendable {
-    let fiveHour: UsageWindow
-    let sevenDay: UsageWindow
-
-    static func parse(_ data: Data) throws -> UsageSnapshot {
-        let raw = try JSONDecoder().decode(RawUsage.self, from: data)
-        return UsageSnapshot(
-            fiveHour: try raw.fiveHour.value,
-            sevenDay: try raw.sevenDay.value
-        )
-    }
+struct ProviderUsage: Equatable, Sendable {
+    let provider: String
+    let windows: [UsageWindow]
 }
+
+enum UsageSourceError: Error {
+    case unavailable
+    case httpStatus(Int)
+}
+
+protocol UsageSource {
+    var name: String { get }
+    func isAvailable() -> Bool
+    func fetch() async throws -> ProviderUsage
+}
+
+protocol UsageTokenSource {
+    func accessToken() -> String?
+}
+
+protocol UsageLoading {
+    func data(for request: URLRequest) async throws -> (Data, URLResponse)
+}
+
+extension URLSession: UsageLoading {}
+
+// MARK: - Claude
 
 enum CredentialParser {
     static func accessToken(from data: Data) throws -> String {
@@ -58,16 +74,6 @@ enum CredentialParser {
         let accessToken: String
     }
 }
-
-protocol UsageTokenSource {
-    func accessToken() -> String?
-}
-
-protocol UsageLoading {
-    func data(for request: URLRequest) async throws -> (Data, URLResponse)
-}
-
-extension URLSession: UsageLoading {}
 
 struct RuntimeUsageTokenSource: UsageTokenSource {
     let credentialsURL: URL
@@ -99,100 +105,13 @@ struct RuntimeUsageTokenSource: UsageTokenSource {
     }
 }
 
-@MainActor
-final class UsageProvider: ObservableObject {
-    @Published private(set) var usage: UsageSnapshot?
-    private var lastGood: UsageSnapshot?
-    private var lastFetchAt: Date?
-    private let tokenSource: UsageTokenSource
-    private let loader: UsageLoading
-    private let minFetchInterval: TimeInterval
-
-    init(
-        tokenSource: UsageTokenSource = RuntimeUsageTokenSource(),
-        loader: UsageLoading = URLSession.shared,
-        minFetchInterval: TimeInterval = 90
-    ) {
-        self.tokenSource = tokenSource
-        self.loader = loader
-        self.minFetchInterval = minFetchInterval
-    }
-
-    func showCached() {
-        usage = lastGood
-    }
-
-    // User tapped "refresh": bypass the throttle and hit the network now.
-    func forceRefresh() async {
-        lastFetchAt = nil
-        await refresh()
-    }
-
-    func refresh() async {
-        // Hovering re-creates the panel and re-fires this on every expand; without a
-        // floor, rapid hovers hammer /oauth/usage into 429. Serve cache within the window.
-        if let last = lastFetchAt, Date().timeIntervalSince(last) < minFetchInterval {
-            usage = lastGood
-            return
-        }
-        lastFetchAt = Date()
-
-        guard let token = tokenSource.accessToken(),
-              let url = URL(string: "https://api.anthropic.com/api/oauth/usage") else {
-            // No token at all — nothing we can ever show.
-            usage = nil
-            lastGood = nil
-            return
-        }
-
-        var request = URLRequest(url: url)
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
-
-        do {
-            let (data, response) = try await loader.data(for: request)
-            guard let response = response as? HTTPURLResponse,
-                  200..<300 ~= response.statusCode else {
-                // Transient failure (429 rate-limit, 5xx, etc.) — keep the last good
-                // numbers on screen instead of blanking the strip.
-                usage = lastGood
-                return
-            }
-            let parsed = try UsageSnapshot.parse(data)
-            lastGood = parsed
-            usage = parsed
-        } catch {
-            usage = lastGood
-        }
-    }
-}
-
-private struct RawUsage: Decodable {
-    let fiveHour: RawUsageWindow
-    let sevenDay: RawUsageWindow
-
-    enum CodingKeys: String, CodingKey {
-        case fiveHour = "five_hour"
-        case sevenDay = "seven_day"
-    }
-}
-
-private struct RawUsageWindow: Decodable {
-    let utilization: Double
-    let resetsAt: String
-
-    enum CodingKeys: String, CodingKey {
-        case utilization
-        case resetsAt = "resets_at"
-    }
-
-    var value: UsageWindow {
-        get throws {
-            guard let date = Self.parseDate(resetsAt) else {
-                throw CocoaError(.coderReadCorrupt)
-            }
-            return UsageWindow(utilization: utilization, resetsAt: date)
-        }
+enum ClaudeUsageParser {
+    static func parse(_ data: Data) throws -> ProviderUsage {
+        let raw = try JSONDecoder().decode(RawClaudeUsage.self, from: data)
+        return ProviderUsage(provider: "Claude", windows: [
+            try raw.fiveHour.window(label: "5h"),
+            try raw.sevenDay.window(label: "7d")
+        ])
     }
 
     // The API sends fractional seconds ("...59.588521+00:00"), which a default
@@ -202,5 +121,272 @@ private struct RawUsageWindow: Decodable {
         withFraction.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         if let date = withFraction.date(from: string) { return date }
         return ISO8601DateFormatter().date(from: string)
+    }
+}
+
+struct ClaudeUsageSource: UsageSource {
+    let name = "Claude"
+    private let tokenSource: UsageTokenSource
+    private let loader: UsageLoading
+
+    init(tokenSource: UsageTokenSource = RuntimeUsageTokenSource(), loader: UsageLoading = URLSession.shared) {
+        self.tokenSource = tokenSource
+        self.loader = loader
+    }
+
+    func isAvailable() -> Bool {
+        tokenSource.accessToken() != nil
+    }
+
+    func fetch() async throws -> ProviderUsage {
+        guard let token = tokenSource.accessToken(),
+              let url = URL(string: "https://api.anthropic.com/api/oauth/usage") else {
+            throw UsageSourceError.unavailable
+        }
+
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
+
+        let (data, response) = try await loader.data(for: request)
+        guard let http = response as? HTTPURLResponse, 200..<300 ~= http.statusCode else {
+            throw UsageSourceError.httpStatus((response as? HTTPURLResponse)?.statusCode ?? -1)
+        }
+        return try ClaudeUsageParser.parse(data)
+    }
+}
+
+private struct RawClaudeUsage: Decodable {
+    let fiveHour: RawClaudeWindow
+    let sevenDay: RawClaudeWindow
+
+    enum CodingKeys: String, CodingKey {
+        case fiveHour = "five_hour"
+        case sevenDay = "seven_day"
+    }
+}
+
+private struct RawClaudeWindow: Decodable {
+    let utilization: Double
+    let resetsAt: String
+
+    enum CodingKeys: String, CodingKey {
+        case utilization
+        case resetsAt = "resets_at"
+    }
+
+    func window(label: String) throws -> UsageWindow {
+        guard let date = ClaudeUsageParser.parseDate(resetsAt) else {
+            throw CocoaError(.coderReadCorrupt)
+        }
+        return UsageWindow(label: label, utilization: utilization, resetsAt: date)
+    }
+}
+
+// MARK: - Codex
+
+struct CodexCredentials: Equatable {
+    let accessToken: String
+    let accountId: String
+}
+
+protocol CodexTokenSource {
+    func credentials() -> CodexCredentials?
+}
+
+enum CodexCredentialParser {
+    static func credentials(from data: Data) throws -> CodexCredentials {
+        let raw = try JSONDecoder().decode(RawCodexAuth.self, from: data)
+        guard !raw.tokens.accessToken.isEmpty, !raw.tokens.accountId.isEmpty else {
+            throw CocoaError(.coderValueNotFound)
+        }
+        return CodexCredentials(accessToken: raw.tokens.accessToken, accountId: raw.tokens.accountId)
+    }
+
+    private struct RawCodexAuth: Decodable {
+        let tokens: RawTokens
+    }
+
+    private struct RawTokens: Decodable {
+        let accessToken: String
+        let accountId: String
+
+        enum CodingKeys: String, CodingKey {
+            case accessToken = "access_token"
+            case accountId = "account_id"
+        }
+    }
+}
+
+struct RuntimeCodexTokenSource: CodexTokenSource {
+    let authURL: URL
+
+    init(authURL: URL = RuntimeCodexTokenSource.defaultAuthURL()) {
+        self.authURL = authURL
+    }
+
+    static func defaultAuthURL() -> URL {
+        let home = ProcessInfo.processInfo.environment["CODEX_HOME"].map { URL(fileURLWithPath: $0) }
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex")
+        return home.appendingPathComponent("auth.json")
+    }
+
+    func credentials() -> CodexCredentials? {
+        guard let data = try? Data(contentsOf: authURL) else { return nil }
+        return try? CodexCredentialParser.credentials(from: data)
+    }
+}
+
+enum CodexUsageParser {
+    static func parse(_ data: Data) throws -> ProviderUsage {
+        let raw = try JSONDecoder().decode(RawCodexUsage.self, from: data)
+        var windows = [raw.rateLimit.primaryWindow.window]
+        if let secondary = raw.rateLimit.secondaryWindow {
+            windows.append(secondary.window)
+        }
+        return ProviderUsage(provider: "Codex", windows: windows)
+    }
+}
+
+private struct RawCodexUsage: Decodable {
+    let rateLimit: RawRateLimit
+
+    enum CodingKeys: String, CodingKey {
+        case rateLimit = "rate_limit"
+    }
+}
+
+private struct RawRateLimit: Decodable {
+    let primaryWindow: RawCodexWindow
+    let secondaryWindow: RawCodexWindow?
+
+    enum CodingKeys: String, CodingKey {
+        case primaryWindow = "primary_window"
+        case secondaryWindow = "secondary_window"
+    }
+}
+
+private struct RawCodexWindow: Decodable {
+    let usedPercent: Double
+    let limitWindowSeconds: Int
+    let resetAt: TimeInterval
+
+    enum CodingKeys: String, CodingKey {
+        case usedPercent = "used_percent"
+        case limitWindowSeconds = "limit_window_seconds"
+        case resetAt = "reset_at"
+    }
+
+    var window: UsageWindow {
+        UsageWindow(
+            label: Self.label(forSeconds: limitWindowSeconds),
+            utilization: usedPercent,
+            resetsAt: Date(timeIntervalSince1970: resetAt)
+        )
+    }
+
+    static func label(forSeconds seconds: Int) -> String {
+        switch seconds {
+        case 18_000: return "5h"
+        case 604_800: return "7d"
+        default:
+            if seconds % 86_400 == 0 { return "\(seconds / 86_400)d" }
+            if seconds % 3_600 == 0 { return "\(seconds / 3_600)h" }
+            return "\(seconds)s"
+        }
+    }
+}
+
+struct CodexUsageSource: UsageSource {
+    let name = "Codex"
+    private let tokenSource: CodexTokenSource
+    private let loader: UsageLoading
+
+    init(tokenSource: CodexTokenSource = RuntimeCodexTokenSource(), loader: UsageLoading = URLSession.shared) {
+        self.tokenSource = tokenSource
+        self.loader = loader
+    }
+
+    func isAvailable() -> Bool {
+        tokenSource.credentials() != nil
+    }
+
+    func fetch() async throws -> ProviderUsage {
+        guard let credentials = tokenSource.credentials(),
+              let url = URL(string: "https://chatgpt.com/backend-api/wham/usage") else {
+            throw UsageSourceError.unavailable
+        }
+
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(credentials.accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue(credentials.accountId, forHTTPHeaderField: "chatgpt-account-id")
+
+        let (data, response) = try await loader.data(for: request)
+        guard let http = response as? HTTPURLResponse, 200..<300 ~= http.statusCode else {
+            throw UsageSourceError.httpStatus((response as? HTTPURLResponse)?.statusCode ?? -1)
+        }
+        return try CodexUsageParser.parse(data)
+    }
+}
+
+// MARK: - Aggregator
+
+@MainActor
+final class UsageProvider: ObservableObject {
+    @Published private(set) var providers: [ProviderUsage] = []
+    private var states: [SourceState]
+    private let minFetchInterval: TimeInterval
+
+    private struct SourceState {
+        let source: UsageSource
+        var lastGood: ProviderUsage?
+        var lastFetchAt: Date?
+    }
+
+    init(
+        sources: [UsageSource] = [ClaudeUsageSource(), CodexUsageSource()],
+        minFetchInterval: TimeInterval = 90
+    ) {
+        self.states = sources.map { SourceState(source: $0, lastGood: nil, lastFetchAt: nil) }
+        self.minFetchInterval = minFetchInterval
+    }
+
+    func showCached() {
+        providers = states.compactMap(\.lastGood)
+    }
+
+    // User tapped "refresh": bypass the throttle and hit the network now, for every provider.
+    func forceRefresh() async {
+        for index in states.indices { states[index].lastFetchAt = nil }
+        await refresh()
+    }
+
+    func refresh() async {
+        for index in states.indices {
+            await refreshSource(at: index)
+        }
+        providers = states.compactMap(\.lastGood)
+    }
+
+    private func refreshSource(at index: Int) async {
+        // Hovering re-creates the panel and re-fires this on every expand; without a
+        // floor, rapid hovers hammer the usage endpoints into 429. Serve cache within the window.
+        if let last = states[index].lastFetchAt, Date().timeIntervalSince(last) < minFetchInterval {
+            return
+        }
+        states[index].lastFetchAt = Date()
+
+        guard states[index].source.isAvailable() else {
+            // No credentials at all — this provider is simply absent, not an error.
+            states[index].lastGood = nil
+            return
+        }
+
+        do {
+            states[index].lastGood = try await states[index].source.fetch()
+        } catch {
+            // Transient failure (429 rate-limit, 5xx, network error, etc.) — keep the
+            // last good numbers for this provider instead of dropping it from the strip.
+        }
     }
 }
