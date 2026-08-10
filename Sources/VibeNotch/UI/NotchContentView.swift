@@ -22,6 +22,7 @@ struct NotchContentView: View {
     let jumper: Jumper
     let actionInjector: ActionInjector
     let actions: NotchActions
+    let shortcuts: CardShortcutMonitor
 
     var body: some View {
         Group {
@@ -90,24 +91,60 @@ struct NotchContentView: View {
                toolName: session.pendingToolName,
                input: session.pendingToolInput
            ) {
-            switch pending {
-            case let .permission(request):
-                PermissionRequestCard(request: request) { decision in
-                    respond(decision, to: session)
-                }
-            case let .plan(markdown):
-                PlanReviewCard(markdown: markdown) { decision in
-                    respond(decision, to: session)
-                }
-            case let .question(prompt):
-                QuestionPromptCard(prompt: prompt) { option in
-                    respond(option, to: prompt, in: session)
-                }
-            }
+            // The monitor's lifetime is the card's: SwiftUI tears this branch down when the
+            // panel collapses or the session stops needing an answer, so the global key
+            // monitor can never outlive the card it belongs to.
+            pendingCard(pending, for: session)
+                .onAppear { shortcuts.start(handleShortcut) }
+                .onDisappear { shortcuts.stop() }
         } else {
             FeaturedSessionCard(session: session) {
                 jump(to: session)
             }
+        }
+    }
+
+    @ViewBuilder
+    private func pendingCard(_ pending: PendingAction, for session: AgentSession) -> some View {
+        switch pending {
+        case let .permission(request):
+            PermissionRequestCard(request: request) { decision in
+                respond(decision, to: session)
+            }
+        case let .plan(markdown):
+            PlanReviewCard(markdown: markdown) { decision in
+                respond(decision, to: session)
+            }
+        case let .question(prompt):
+            QuestionPromptCard(prompt: prompt) { option in
+                respond(option, to: prompt, in: session)
+            }
+        }
+    }
+
+    /// Re-derives the card at keystroke time rather than capturing it: the monitor outlives
+    /// individual renders, and a stale capture would answer a request the agent has already
+    /// moved past. It also means "no card on screen" simply finds nothing to answer.
+    private func handleShortcut(_ shortcut: CardShortcut) {
+        guard let session = featuredSession,
+              session.status == .needsAction,
+              let pending = PendingAction.parse(
+                  toolName: session.pendingToolName,
+                  input: session.pendingToolInput
+              ) else { return }
+
+        switch (pending, shortcut) {
+        case let (.question(prompt), .option(number)):
+            respond(number, to: prompt, in: session)
+        case (.question, _):
+            // A question has numbered answers only — allow/deny would be a guess.
+            return
+        case (_, .allow):
+            respond(.allow, to: session)
+        case (_, .deny):
+            respond(.deny, to: session)
+        case let (_, .option(number)):
+            respond(option: number, in: session)
         }
     }
 
@@ -120,7 +157,15 @@ struct NotchContentView: View {
     }
 
     private func respond(_ option: Int, to prompt: QuestionPrompt, in session: AgentSession) {
-        if !prompt.multiSelect, actionInjector.inject(String(option), into: session) {
+        guard !prompt.multiSelect, prompt.options.indices.contains(option - 1) else {
+            jump(to: session)
+            return
+        }
+        respond(option: option, in: session)
+    }
+
+    private func respond(option: Int, in session: AgentSession) {
+        if actionInjector.inject(String(option), into: session) {
             actions.collapse()
         } else {
             jump(to: session)

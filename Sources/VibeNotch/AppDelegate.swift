@@ -11,6 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let usageProvider = UsageProvider()
     private let actionInjector = ActionInjector()
     private let hoverController = NotchHoverController()
+    private let cardShortcuts = CardShortcutMonitor()
     private var projectsWatcher: ClaudeProjectsWatcher?
     private var spoolWatcher: SpoolWatcher?
     private var notch: DynamicNotch<NotchContentView, CompactLeadingView, CompactTrailingView>?
@@ -39,7 +40,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 settings: self.settings,
                 jumper: self.jumper,
                 actionInjector: self.actionInjector,
-                actions: self.actions
+                actions: self.actions,
+                shortcuts: self.cardShortcuts
             )
         } compactLeading: {
             CompactLeadingView(store: self.store, actions: self.actions)
@@ -100,6 +102,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         projectsWatcher?.stop()
         spoolWatcher?.stop()
         hoverController.stop()
+        cardShortcuts.stop()
     }
 
     private func selectedScreenPair() -> (screen: NSScreen, info: ScreenInfo)? {
