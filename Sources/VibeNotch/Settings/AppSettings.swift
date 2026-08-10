@@ -19,6 +19,34 @@ enum DisplayMode: String, CaseIterable, Identifiable {
     }
 }
 
+/// Which display the panel should render on. `.activeDisplay` tracks `NSScreen.main` — AppKit's
+/// name for the screen holding the window with keyboard focus — so it follows the user between
+/// displays; the other two policies are stable regardless of focus. See `ScreenInfo.selected`
+/// for the actual selection logic and its fallbacks.
+enum ScreenChoice: String, CaseIterable, Identifiable {
+    case activeDisplay
+    case notchDisplay
+    case primaryDisplay
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .activeDisplay: "Active display"
+        case .notchDisplay: "Notch display"
+        case .primaryDisplay: "Primary display"
+        }
+    }
+
+    var help: String {
+        switch self {
+        case .activeDisplay: "Follows your focused window between displays."
+        case .notchDisplay: "Always the MacBook's built-in display, when connected."
+        case .primaryDisplay: "Always the display with the menu bar."
+        }
+    }
+}
+
 enum NeedsActionDwellTime: Int, CaseIterable, Identifiable {
     case off = 0
     case threeSeconds = 3
@@ -36,6 +64,7 @@ enum NeedsActionDwellTime: Int, CaseIterable, Identifiable {
 @MainActor
 final class AppSettings: ObservableObject {
     @AppStorage("displayMode") private var storedDisplayMode: DisplayMode = .hoverOnly
+    @AppStorage("screenChoice") private var storedScreenChoice: ScreenChoice = .activeDisplay
     @AppStorage("launchAtLogin") private var storedLaunchAtLogin = false
     @AppStorage("soundsEnabled") private var storedSoundsEnabled = true
     @AppStorage("panelWidth") private var storedPanelWidth = 500.0
@@ -45,6 +74,7 @@ final class AppSettings: ObservableObject {
     let applicationSupportDirectory: URL
     let settingsURL: URL
     var onDisplayModeChange: ((DisplayMode) -> Void)?
+    var onScreenChoiceChange: ((ScreenChoice) -> Void)?
 
     var displayMode: DisplayMode {
         get { storedDisplayMode }
@@ -53,6 +83,16 @@ final class AppSettings: ObservableObject {
             objectWillChange.send()
             storedDisplayMode = newValue
             onDisplayModeChange?(newValue)
+        }
+    }
+
+    var screenChoice: ScreenChoice {
+        get { storedScreenChoice }
+        set {
+            guard newValue != storedScreenChoice else { return }
+            objectWillChange.send()
+            storedScreenChoice = newValue
+            onScreenChoiceChange?(newValue)
         }
     }
 

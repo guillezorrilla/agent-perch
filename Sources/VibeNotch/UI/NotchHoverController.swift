@@ -5,12 +5,16 @@ struct ScreenInfo: Equatable {
     let frame: NSRect
     let hasNotch: Bool
     let isMain: Bool
+    /// The screen at `frame.origin == .zero` — the one carrying the menu bar. Derived rather
+    /// than read from `NSScreen.main` so it stays stable regardless of keyboard focus.
+    let isPrimary: Bool
 
-    init(id: CGDirectDisplayID, frame: NSRect, hasNotch: Bool, isMain: Bool) {
+    init(id: CGDirectDisplayID, frame: NSRect, hasNotch: Bool, isMain: Bool, isPrimary: Bool = false) {
         self.id = id
         self.frame = frame
         self.hasNotch = hasNotch
         self.isMain = isMain
+        self.isPrimary = isPrimary
     }
 
     init(_ screen: NSScreen, mainScreen: NSScreen?) {
@@ -19,10 +23,28 @@ struct ScreenInfo: Equatable {
         frame = screen.frame
         hasNotch = screen.auxiliaryTopLeftArea != nil && screen.auxiliaryTopRightArea != nil
         isMain = mainScreen.map { Self.displayID(for: $0) == displayID } ?? false
+        isPrimary = screen.frame.origin == .zero
     }
 
-    static func selected(from screens: [ScreenInfo]) -> ScreenInfo? {
-        screens.first(where: \ScreenInfo.hasNotch) ?? screens.first(where: \ScreenInfo.isMain)
+    /// The three `ScreenChoice` policies, each falling back through notch screen, then main
+    /// screen, then the first screen in the array — never crashing, nil only for an empty array.
+    /// `choice` defaults to `.notchDisplay` (the app's original, pre-setting behavior: prefer the
+    /// physical notch, else main) so existing callers/tests that don't pass one are unaffected.
+    static func selected(from screens: [ScreenInfo], choice: ScreenChoice = .notchDisplay) -> ScreenInfo? {
+        guard !screens.isEmpty else { return nil }
+        let notch = screens.first(where: \ScreenInfo.hasNotch)
+        let main = screens.first(where: \ScreenInfo.isMain)
+        let primary = screens.first(where: \ScreenInfo.isPrimary)
+        let first = screens.first
+
+        switch choice {
+        case .activeDisplay:
+            return main ?? notch ?? first
+        case .notchDisplay:
+            return notch ?? main ?? first
+        case .primaryDisplay:
+            return primary ?? notch ?? main ?? first
+        }
     }
 
     private static func displayID(for screen: NSScreen) -> CGDirectDisplayID {
@@ -183,6 +205,11 @@ final class NotchHoverController {
     private var panelHovered: () -> Bool = { false }
     private var onEnter: () -> Bool = { false }
     private var onExit: () -> Void = {}
+    /// Runs every poll tick regardless of hover state. `.activeDisplay` tracks `NSScreen.main`,
+    /// which changes silently as focus moves between displays — no screen-parameter notification
+    /// fires — so the caller piggybacks its own debounced "did the selected screen change" check
+    /// here instead of standing up a second timer.
+    private var onTick: () -> Void = {}
 
     init(
         exitGrace: TimeInterval = NotchHoverController.defaultExitGrace,
@@ -201,7 +228,8 @@ final class NotchHoverController {
         screenFrame: @escaping () -> NSRect,
         panelHovered: @escaping () -> Bool,
         onEnter: @escaping () -> Bool,
-        onExit: @escaping () -> Void
+        onExit: @escaping () -> Void,
+        onTick: @escaping () -> Void = {}
     ) {
         timer?.invalidate()
         timer = nil
@@ -210,6 +238,7 @@ final class NotchHoverController {
         self.panelHovered = panelHovered
         self.onEnter = onEnter
         self.onExit = onExit
+        self.onTick = onTick
         let timer = Timer(timeInterval: pollInterval, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
         }
@@ -258,6 +287,7 @@ final class NotchHoverController {
     }
 
     private func tick() {
+        onTick()
         let inside = isMouseInside()
         switch Self.step(&state, mouseInside: inside, now: Date().timeIntervalSinceReferenceDate, exitGrace: exitGrace) {
         case .expand:

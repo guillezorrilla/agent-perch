@@ -27,6 +27,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// What we last asked DynamicNotchKit to do. Its own `state` is package-internal, and we
     /// need to know whether a leftover panel is live before ordering it out.
     private var notchIsVisible = false
+    /// The screen a `.activeDisplay` reposition is already debounced towards. Makes the hover-tick
+    /// watcher edge-triggered: a focus change that persists across many ticks (10/sec) schedules
+    /// exactly one reposition instead of restarting the debounce every 100ms and never firing.
+    private var pendingActiveScreen: ScreenInfo?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApplication.shared.setActivationPolicy(.accessory)
@@ -55,6 +59,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         actions.hoverExpandAction = { [weak self] in self?.expandOnHover() }
         actions.collapseAction = { [weak self] in self?.collapseNotch() }
         settings.onDisplayModeChange = { [weak self] in self?.applyDisplayMode($0) }
+        settings.onScreenChoiceChange = { [weak self] _ in
+            guard let self else { return }
+            applyDisplayMode(settings.displayMode, forceReposition: true)
+        }
 
         notifier = SessionNotifier(
             jumper: jumper,
@@ -110,7 +118,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let screens = NSScreen.screens.map { screen in
             (screen: screen, info: ScreenInfo(screen, mainScreen: mainScreen))
         }
-        guard let selected = ScreenInfo.selected(from: screens.map { $0.info }) else { return nil }
+        guard let selected = ScreenInfo.selected(from: screens.map { $0.info }, choice: settings.screenChoice)
+        else { return nil }
         return screens.first { $0.info.id == selected.id }
     }
 
@@ -183,8 +192,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // both the notch and floating (clamshell) styles — which a re-derived rect was not.
             panelHovered: { [weak self] in self?.notch?.isHovering ?? false },
             onEnter: { [weak self] in self?.expandNotch() ?? false },
-            onExit: { [weak self] in self?.restToBaseState() }
+            onExit: { [weak self] in self?.restToBaseState() },
+            onTick: { [weak self] in self?.checkActiveDisplayFollow() }
         )
+    }
+
+    /// `.activeDisplay` follows `NSScreen.main`, which changes silently as keyboard focus moves
+    /// between displays — plugging/unplugging a monitor fires `didChangeScreenParametersNotification`,
+    /// moving focus to another screen's window does not. The hover poll (10/sec, running whenever
+    /// a mode is active) is the only thing already ticking often enough to notice, so this
+    /// piggybacks on it rather than adding a second timer. Debounced ~400ms so a cursor merely
+    /// passing over another display's window mid-move doesn't thrash the panel.
+    private func checkActiveDisplayFollow() {
+        guard settings.screenChoice == .activeDisplay, settings.displayMode != .hidden else { return }
+        let current = selectedScreenPair()?.info
+        guard current != lastAppliedScreen, current != pendingActiveScreen else { return }
+        pendingActiveScreen = current
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(400))
+            guard let self else { return }
+            defer { self.pendingActiveScreen = nil }
+            guard !Task.isCancelled,
+                  current == selectedScreenPair()?.info,
+                  current != lastAppliedScreen else { return }
+            applyDisplayMode(settings.displayMode, forceReposition: true)
+            discardStrayPanel()
+        }
     }
 
     /// The mode's resting appearance, with hover state cleared to match. Hover exit, dwell
