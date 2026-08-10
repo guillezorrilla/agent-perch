@@ -241,6 +241,7 @@ final class IdleNotificationStoreTests: XCTestCase {
         SessionStore(
             projectsDirectory: temporaryDirectory(),
             codexHome: temporaryDirectory(),
+            antigravityHome: temporaryDirectory(),
             processProvider: { [] }
         )
     }

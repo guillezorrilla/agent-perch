@@ -1,0 +1,291 @@
+import Darwin
+import Foundation
+
+/// Parses a workspace's `workspace.json` — `{"folder":"file:///abs/path"}` — into the absolute
+/// path Antigravity has open there.
+enum AntigravityWorkspaceJSON {
+    static func decodeFolderPath(from data: Data) -> String? {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let folder = object["folder"] as? String else { return nil }
+        return decodeFileURI(folder)
+    }
+
+    /// `URLComponents` percent-decodes `.path` for us, so `file:///Users/me/My%20Repo` already
+    /// comes back as `/Users/me/My Repo`. A URI with a real host (not empty, not `localhost`) —
+    /// a remote or WSL workspace — is rejected: it names a folder nothing on this Mac could open,
+    /// and anything that isn't a `file://` URI at all (or has no path) is just as unusable.
+    static func decodeFileURI(_ uriString: String) -> String? {
+        guard let components = URLComponents(string: uriString),
+              components.scheme == "file",
+              components.host == nil || components.host!.isEmpty || components.host == "localhost"
+        else { return nil }
+        let path = components.path
+        return path.isEmpty ? nil : path
+    }
+}
+
+/// Cross-references `globalStorage/storage.json`'s `backupWorkspaces.folders[]` — Antigravity's
+/// own most-recent-first record of opened folders — for a recency signal `workspaceStorage`'s
+/// directory mtimes alone don't carry.
+enum AntigravityGlobalStorage {
+    /// `canonical folder path -> its index in backupWorkspaces.folders` (0 = most recent). A
+    /// workspace not listed there at all has no rank and sorts after everything that does — see
+    /// `AntigravityRecency`.
+    static func recencyRank(contentsAt url: URL) -> [String: Int] {
+        guard let data = try? Data(contentsOf: url) else { return [:] }
+        return recencyRank(data)
+    }
+
+    static func recencyRank(_ data: Data) -> [String: Int] {
+        var rank: [String: Int] = [:]
+        for (index, uri) in folderURIs(data).enumerated() {
+            guard let path = AntigravityWorkspaceJSON.decodeFileURI(uri) else { continue }
+            let key = CanonicalPath.canonical(path)
+            if rank[key] == nil { rank[key] = index }
+        }
+        return rank
+    }
+
+    static func folderURIs(_ data: Data) -> [String] {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let backup = object["backupWorkspaces"] as? [String: Any],
+              let folders = backup["folders"] as? [[String: Any]] else { return [] }
+        return folders.compactMap { $0["folderUri"] as? String }
+    }
+}
+
+/// The final ordering of discovered workspaces: `storage.json`'s own recency list wins when both
+/// sides appear in it (lower index = more recent); a workspace missing from that list sorts after
+/// one that's present; when neither is listed, the newer `lastActivity` wins.
+enum AntigravityRecency {
+    static func isOrderedBefore(
+        cwd: String,
+        lastActivity: Date,
+        otherCwd: String,
+        otherLastActivity: Date,
+        recencyRank: [String: Int]
+    ) -> Bool {
+        let lhsRank = recencyRank[CanonicalPath.canonical(cwd)]
+        let rhsRank = recencyRank[CanonicalPath.canonical(otherCwd)]
+        switch (lhsRank, rhsRank) {
+        case let (lhs?, rhs?): return lhs < rhs
+        case (.some, nil): return true
+        case (nil, .some): return false
+        case (nil, nil): return lastActivity > otherLastActivity
+        }
+    }
+}
+
+/// Bounded discovery of workspace directories under `workspaceStorage/`. One directory listing,
+/// never recursive, capped to the newest-touched `maxDirectories` — a power user can accumulate
+/// hundreds of these over the IDE's lifetime, most for folders not opened in months, mirroring
+/// why `CodexRolloutDiscovery` caps rollout files the same way.
+enum AntigravityWorkspaceDiscovery {
+    static func candidateWorkspaceDirectories(
+        workspaceStorageRoot: URL,
+        fileManager: FileManager,
+        maxDirectories: Int = 30
+    ) -> [URL] {
+        let keys: Set<URLResourceKey> = [.isDirectoryKey, .contentModificationDateKey]
+        let entries = (try? fileManager.contentsOfDirectory(
+            at: workspaceStorageRoot,
+            includingPropertiesForKeys: Array(keys),
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        let directories = entries.filter {
+            (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+        }
+        return directories
+            .sorted { modificationDate(of: $0, fileManager: fileManager) > modificationDate(of: $1, fileManager: fileManager) }
+            .prefix(maxDirectories)
+            .map { $0 }
+    }
+
+    /// The newest mtime among a workspace's storage directory contents, or the directory itself
+    /// when that's newer (or the directory is empty) — one level deep, never recursive.
+    static func lastActivity(of storageDirectory: URL, fileManager: FileManager) -> Date {
+        let contents = (try? fileManager.contentsOfDirectory(
+            at: storageDirectory,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        let newestContent = contents.map { modificationDate(of: $0, fileManager: fileManager) }.max() ?? .distantPast
+        return max(newestContent, modificationDate(of: storageDirectory, fileManager: fileManager))
+    }
+
+    private static func modificationDate(of url: URL, fileManager: FileManager) -> Date {
+        if let resourceValue = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate {
+            return resourceValue
+        }
+        return (try? fileManager.attributesOfItem(atPath: url.path)[.modificationDate] as? Date) ?? .distantPast
+    }
+}
+
+/// Mirrors `CodexLiveness`'s stale-mtime-vs-live-process split — a live process can promote a
+/// workspace to `.active` regardless of how stale its mtime is; without one, mtime only gates
+/// `.idle` vs. hidden — with one addition Antigravity needs on top of it: a running Antigravity
+/// process says nothing about WHICH open workspace an agent is actually working in (an Electron
+/// app's own process cwd is its Resources directory, not the folder the user opened, so
+/// per-workspace attribution by process is not possible the way it is for Claude/Codex's tty or
+/// `resume <id>` command line). So only the single workspace whose storage directory was touched
+/// most recently is ever eligible for `.active`; every other workspace a live process might also
+/// be sitting on shows idle instead, never active.
+enum AntigravityLiveness {
+    static func status(
+        isMostRecentlyTouchedWorkspace: Bool,
+        processRunning: Bool,
+        modifiedAt: Date,
+        now: Date
+    ) -> SessionStatus? {
+        if processRunning, isMostRecentlyTouchedWorkspace {
+            return .active
+        }
+        guard now.timeIntervalSince(modifiedAt) < 60 * 60.0 else { return nil }
+        return .idle
+    }
+}
+
+/// Whether an Antigravity IDE process is alive right now — the only signal `AntigravityLiveness`
+/// needs to ever promote a workspace to `.active`. Two independent checks, since either alone can
+/// miss: `code.lock` names the primary instance's pid directly but can go stale after a crash;
+/// `pgrep` finds any Antigravity process by name but says nothing about which pid is the real
+/// one. Either one seeing a live process is enough.
+enum AntigravityProcessCheck {
+    static func isRunningNow(codeLockURL: URL) -> Bool {
+        isRunning(codeLockURL: codeLockURL, fileManager: .default) || isRunningByProcessName()
+    }
+
+    static func isRunning(
+        codeLockURL: URL,
+        fileManager: FileManager,
+        pidAlive: (Int32) -> Bool = { kill($0, 0) == 0 }
+    ) -> Bool {
+        guard fileManager.fileExists(atPath: codeLockURL.path),
+              let data = try? Data(contentsOf: codeLockURL),
+              let text = String(data: data, encoding: .utf8),
+              let pid = Int32(text.trimmingCharacters(in: .whitespacesAndNewlines)) else { return false }
+        return pidAlive(pid)
+    }
+
+    static func isRunningByProcessName() -> Bool {
+        guard let listing = TTYResolver.output("/usr/bin/pgrep", ["Antigravity"]) else { return false }
+        return !listing.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+}
+
+/// Whether `agy` — Antigravity's own CLI, if installed — is on `PATH`. `DiscoveredSession`'s
+/// `resumeCommand` uses this to prefer `agy <path>` over the `open -a` fallback the Jumper falls
+/// back to when it's absent.
+enum AntigravityCLI {
+    static func isAgyAvailable() -> Bool {
+        guard let output = TTYResolver.output("/usr/bin/which", ["agy"]) else { return false }
+        return !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+}
+
+/// Discovers Antigravity (Google's VS Code-fork agentic IDE) workspaces from
+/// `~/Library/Application Support/Antigravity IDE`.
+///
+/// Antigravity has no per-session transcript to read — its agent turns are ephemeral and never
+/// persisted anywhere on disk — so unlike Claude/Codex this surfaces WORKSPACES the IDE has open
+/// or has recently had open, not agent turns. `DiscoveredSession.title` is the folder's own name;
+/// there is nothing more specific (a prompt, a summary) to show.
+///
+/// - Membership: one directory listing of `workspaceStorage` (never recursive, capped — see
+///   `AntigravityWorkspaceDiscovery`), each candidate's `workspace.json` decoded for its folder
+///   path (see `AntigravityWorkspaceJSON`).
+/// - Recency: `globalStorage/storage.json`'s `backupWorkspaces.folders[]` order, when a workspace
+///   appears there (see `AntigravityGlobalStorage`/`AntigravityRecency`).
+/// - Liveness: see `AntigravityLiveness` for the "only the most-recently-touched workspace can
+///   ever be active" heuristic and why per-workspace attribution isn't possible here at all.
+final class AntigravitySessionSource: AgentSessionSource {
+    let agentName = "Antigravity"
+    let antigravityHome: URL
+    private let fileManager: FileManager
+    private let isRunningProvider: () -> Bool
+    private let agyAvailableProvider: () -> Bool
+
+    init(
+        antigravityHome: URL = AntigravitySessionSource.defaultAntigravityHome(),
+        fileManager: FileManager = .default,
+        isRunningProvider: (() -> Bool)? = nil,
+        agyAvailableProvider: @escaping () -> Bool = AntigravityCLI.isAgyAvailable
+    ) {
+        self.antigravityHome = antigravityHome
+        self.fileManager = fileManager
+        let codeLockURL = antigravityHome.appendingPathComponent("code.lock", isDirectory: false)
+        self.isRunningProvider = isRunningProvider ?? { AntigravityProcessCheck.isRunningNow(codeLockURL: codeLockURL) }
+        self.agyAvailableProvider = agyAvailableProvider
+    }
+
+    static func defaultAntigravityHome() -> URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Antigravity IDE", isDirectory: true)
+    }
+
+    private var workspaceStorageRoot: URL {
+        antigravityHome.appendingPathComponent("User/workspaceStorage", isDirectory: true)
+    }
+
+    private var globalStorageJSONURL: URL {
+        antigravityHome.appendingPathComponent("User/globalStorage/storage.json", isDirectory: false)
+    }
+
+    func discover(now: Date) -> [DiscoveredSession] {
+        let directories = AntigravityWorkspaceDiscovery.candidateWorkspaceDirectories(
+            workspaceStorageRoot: workspaceStorageRoot,
+            fileManager: fileManager
+        )
+        guard !directories.isEmpty else { return [] }
+
+        let workspaces: [(cwd: String, storageDirectory: URL, lastActivity: Date)] = directories.compactMap { directory in
+            guard let data = try? Data(contentsOf: directory.appendingPathComponent("workspace.json")),
+                  let path = AntigravityWorkspaceJSON.decodeFolderPath(from: data) else { return nil }
+            let lastActivity = AntigravityWorkspaceDiscovery.lastActivity(of: directory, fileManager: fileManager)
+            return (cwd: path, storageDirectory: directory, lastActivity: lastActivity)
+        }
+        guard !workspaces.isEmpty else { return [] }
+
+        // Costs a subprocess spawn each — never paid unless there is at least one real
+        // workspace to show for it.
+        let processRunning = isRunningProvider()
+        let agyAvailable = agyAvailableProvider()
+        let recencyRank = AntigravityGlobalStorage.recencyRank(contentsAt: globalStorageJSONURL)
+        let mostRecentActivity = workspaces.map(\.lastActivity).max()
+
+        let discovered: [DiscoveredSession] = workspaces.compactMap { workspace in
+            let isMostRecent = mostRecentActivity.map { workspace.lastActivity == $0 } ?? false
+            guard let status = AntigravityLiveness.status(
+                isMostRecentlyTouchedWorkspace: isMostRecent,
+                processRunning: processRunning,
+                modifiedAt: workspace.lastActivity,
+                now: now
+            ) else { return nil }
+
+            let basename = workspace.cwd.hasPrefix("/")
+                ? URL(fileURLWithPath: workspace.cwd).lastPathComponent
+                : workspace.cwd
+            return DiscoveredSession(
+                sessionId: "antigravity:\(workspace.storageDirectory.lastPathComponent)",
+                agentName: agentName,
+                cwd: workspace.cwd,
+                title: SessionTitle.truncate(basename, max: 60),
+                lastActivity: workspace.lastActivity,
+                status: status,
+                resumeCommand: agyAvailable ? "agy \(AppleScriptRunner.shellQuote(workspace.cwd))" : nil,
+                sessionFileURL: nil
+            )
+        }
+
+        let ordered = discovered.sorted {
+            AntigravityRecency.isOrderedBefore(
+                cwd: $0.cwd,
+                lastActivity: $0.lastActivity,
+                otherCwd: $1.cwd,
+                otherLastActivity: $1.lastActivity,
+                recencyRank: recencyRank
+            )
+        }
+        return Array(ordered.prefix(10))
+    }
+}

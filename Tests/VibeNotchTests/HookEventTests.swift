@@ -140,6 +140,7 @@ final class SessionTransitionTests: XCTestCase {
         let store = SessionStore(
             projectsDirectory: temporaryDirectory(),
             codexHome: temporaryDirectory(),
+            antigravityHome: temporaryDirectory(),
             processProvider: { [] }
         )
 
@@ -218,6 +219,7 @@ final class SessionTransitionTests: XCTestCase {
         let store = SessionStore(
             projectsDirectory: projects,
             codexHome: temporaryDirectory(),
+            antigravityHome: temporaryDirectory(),
             processProvider: { [] }
         )
 
@@ -245,6 +247,7 @@ final class SessionTransitionTests: XCTestCase {
         let store = SessionStore(
             projectsDirectory: projects,
             codexHome: temporaryDirectory(),
+            antigravityHome: temporaryDirectory(),
             processProvider: { [] }
         )
         store.refresh(now: Date(timeIntervalSince1970: 101))

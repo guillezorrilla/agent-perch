@@ -28,6 +28,7 @@ final class SessionStore: ObservableObject {
 
     let projectsDirectory: URL
     let codexHome: URL
+    let antigravityHome: URL
     private let sources: [AgentSessionSource]
     private let processProvider: () -> [ClaudeProcess]
     private let terminalResolver: TerminalNameResolver
@@ -39,6 +40,7 @@ final class SessionStore: ObservableObject {
         projectsDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/projects", isDirectory: true),
         codexHome: URL = CodexSessionSource.defaultCodexHome(),
+        antigravityHome: URL = AntigravitySessionSource.defaultAntigravityHome(),
         sources: [AgentSessionSource]? = nil,
         fileManager: FileManager = .default,
         processProvider: @escaping () -> [ClaudeProcess] = { ProcessTableCache.shared.processes() },
@@ -46,6 +48,7 @@ final class SessionStore: ObservableObject {
     ) {
         self.projectsDirectory = projectsDirectory
         self.codexHome = codexHome
+        self.antigravityHome = antigravityHome
         self.sources = sources ?? [
             ClaudeSessionSource(projectsDirectory: projectsDirectory, fileManager: fileManager),
             // Shares this same process listing rather than defaulting to its own — one
@@ -53,7 +56,11 @@ final class SessionStore: ObservableObject {
             // pill resolution below, and keeps them looking at a consistent process snapshot —
             // now literally so: the default provider is a shared, briefly-cached snapshot that a
             // click reuses instead of rescanning (#23).
-            CodexSessionSource(codexHome: codexHome, fileManager: fileManager, processProvider: processProvider)
+            CodexSessionSource(codexHome: codexHome, fileManager: fileManager, processProvider: processProvider),
+            // Antigravity workspaces, not agent turns — see `AntigravitySessionSource`. Its own
+            // liveness check is a separate, cheap subprocess call rather than this shared table:
+            // Claude/Codex CLI processes never identify an Antigravity workspace either way.
+            AntigravitySessionSource(antigravityHome: antigravityHome, fileManager: fileManager)
         ]
         self.processProvider = processProvider
         self.terminalResolver = terminalResolver
@@ -304,7 +311,12 @@ final class SessionStore: ObservableObject {
             // One answer to "which process is this session", shared by the jump rung and the
             // terminal pill: the session's own tty first, then a process that names the session,
             // and only then anything that merely shares the cwd (#23).
-            let target = JumpTarget.resolve(
+            //
+            // Antigravity is a GUI workspace, never a terminal — resolving it against the
+            // process table risks matching an unrelated Claude/Codex CLI process that merely
+            // shares this workspace's cwd, which would wrongly imply a terminal pill and an
+            // exact-focus rung neither exists for it (#3).
+            let target = agentName == "Antigravity" ? JumpTarget.unresolved : JumpTarget.resolve(
                 agentName: agentName,
                 sessionId: sessionID,
                 tty: tty,

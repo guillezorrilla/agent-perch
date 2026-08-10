@@ -11,7 +11,9 @@ final class TerminalNameResolverTests: XCTestCase {
             ("tmux: server", "tmux"),
             ("/Applications/Ghostty.app/Contents/MacOS/ghostty", "Ghostty"),
             ("/Applications/WezTerm.app/Contents/MacOS/wezterm", "WezTerm"),
-            ("/Applications/kitty.app/Contents/MacOS/kitty", "Kitty")
+            ("/Applications/kitty.app/Contents/MacOS/kitty", "Kitty"),
+            ("/Applications/cmux.app/Contents/MacOS/cmux", "cmux"),
+            ("cmux", "cmux")
         ]
 
         for (command, expected) in cases {

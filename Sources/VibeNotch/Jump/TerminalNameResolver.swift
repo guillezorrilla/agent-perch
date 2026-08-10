@@ -52,6 +52,7 @@ final class TerminalNameResolver {
         if lowercased.contains("ghostty") { return "Ghostty" }
         if lowercased.contains("wezterm") { return "WezTerm" }
         if executable == "kitty" || lowercased.contains("kitty.app/") { return "Kitty" }
+        if executable == "cmux" || lowercased.contains("cmux.app/") { return "cmux" }
         return nil
     }
 

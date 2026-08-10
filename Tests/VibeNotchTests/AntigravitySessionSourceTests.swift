@@ -1,0 +1,546 @@
+import Foundation
+import XCTest
+@testable import VibeNotch
+
+final class AntigravityWorkspaceJSONTests: XCTestCase {
+    func testDecodesPlainFileURI() {
+        XCTAssertEqual(AntigravityWorkspaceJSON.decodeFileURI("file:///Users/me/project"), "/Users/me/project")
+    }
+
+    func testDecodesPercentEncodedPath() {
+        XCTAssertEqual(
+            AntigravityWorkspaceJSON.decodeFileURI("file:///Users/me/My%20Repo"),
+            "/Users/me/My Repo"
+        )
+    }
+
+    func testAcceptsEmptyOrLocalhostHost() {
+        XCTAssertEqual(
+            AntigravityWorkspaceJSON.decodeFileURI("file://localhost/Users/me/project"),
+            "/Users/me/project"
+        )
+    }
+
+    /// A remote or WSL workspace names a folder nothing on this Mac could open.
+    func testRejectsARealRemoteHost() {
+        XCTAssertNil(AntigravityWorkspaceJSON.decodeFileURI("file://remote-host/Users/me/project"))
+    }
+
+    func testRejectsNonFileSchemes() {
+        XCTAssertNil(AntigravityWorkspaceJSON.decodeFileURI("https://example.com/project"))
+    }
+
+    func testRejectsAnUnparsableURI() {
+        XCTAssertNil(AntigravityWorkspaceJSON.decodeFileURI(""))
+    }
+
+    func testDecodesTheFolderKeyOutOfWorkspaceJSON() {
+        XCTAssertEqual(
+            AntigravityWorkspaceJSON.decodeFolderPath(from: Data(#"{"folder":"file:///Users/me/project"}"#.utf8)),
+            "/Users/me/project"
+        )
+    }
+
+    func testMissingFolderKeyIsNil() {
+        XCTAssertNil(AntigravityWorkspaceJSON.decodeFolderPath(from: Data(#"{"other":"value"}"#.utf8)))
+    }
+
+    func testCorruptJSONIsNil() {
+        XCTAssertNil(AntigravityWorkspaceJSON.decodeFolderPath(from: Data("not json at all".utf8)))
+    }
+
+    func testEmptyDataIsNil() {
+        XCTAssertNil(AntigravityWorkspaceJSON.decodeFolderPath(from: Data()))
+    }
+}
+
+final class AntigravityGlobalStorageTests: XCTestCase {
+    func testRecencyRankOrdersByArrayIndex() {
+        let json = #"""
+        {"backupWorkspaces":{"folders":[
+            {"folderUri":"file:///Users/me/newest"},
+            {"folderUri":"file:///Users/me/older"}
+        ]}}
+        """#
+        let rank = AntigravityGlobalStorage.recencyRank(Data(json.utf8))
+        XCTAssertEqual(rank["/Users/me/newest"], 0)
+        XCTAssertEqual(rank["/Users/me/older"], 1)
+    }
+
+    func testMalformedFolderEntriesAreSkippedWithoutLosingGoodOnes() {
+        let json = #"""
+        {"backupWorkspaces":{"folders":[
+            {"folderUri":"not-a-file-uri"},
+            {"noFolderUriHere":true},
+            {"folderUri":"file:///Users/me/kept"}
+        ]}}
+        """#
+        // Entries with no `folderUri` at all are dropped before indices are assigned, so this
+        // ends up at index 1 (following the one entry that HAS a `folderUri`, even though it
+        // isn't a usable `file://` one) rather than its position of 2 in the original JSON —
+        // what matters is that it is still found, and still the only entry present.
+        XCTAssertEqual(AntigravityGlobalStorage.recencyRank(Data(json.utf8)), ["/Users/me/kept": 1])
+    }
+
+    func testMissingBackupWorkspacesIsEmpty() {
+        XCTAssertEqual(AntigravityGlobalStorage.recencyRank(Data(#"{"other":1}"#.utf8)), [:])
+    }
+
+    func testCorruptDataIsEmpty() {
+        XCTAssertEqual(AntigravityGlobalStorage.recencyRank(Data("not json".utf8)), [:])
+    }
+
+    func testMissingFileIsTolerated() {
+        XCTAssertEqual(
+            AntigravityGlobalStorage.recencyRank(contentsAt: URL(fileURLWithPath: "/nonexistent/storage.json")),
+            [:]
+        )
+    }
+}
+
+final class AntigravityRecencyTests: XCTestCase {
+    private let older = Date(timeIntervalSince1970: 100)
+    private let newer = Date(timeIntervalSince1970: 200)
+
+    func testBothRankedComparesByRankRegardlessOfMtime() {
+        // /a is OLDER by mtime but ranked more recent by storage.json — the rank wins.
+        XCTAssertTrue(AntigravityRecency.isOrderedBefore(
+            cwd: "/a", lastActivity: older,
+            otherCwd: "/b", otherLastActivity: newer,
+            recencyRank: ["/a": 0, "/b": 1]
+        ))
+    }
+
+    func testOnlyOneRankedWinsOverAnUnrankedOne() {
+        XCTAssertTrue(AntigravityRecency.isOrderedBefore(
+            cwd: "/a", lastActivity: older,
+            otherCwd: "/b", otherLastActivity: newer,
+            recencyRank: ["/a": 5]
+        ))
+        XCTAssertFalse(AntigravityRecency.isOrderedBefore(
+            cwd: "/a", lastActivity: newer,
+            otherCwd: "/b", otherLastActivity: older,
+            recencyRank: ["/b": 5]
+        ))
+    }
+
+    func testNeitherRankedFallsBackToLastActivity() {
+        XCTAssertTrue(AntigravityRecency.isOrderedBefore(
+            cwd: "/a", lastActivity: newer,
+            otherCwd: "/b", otherLastActivity: older,
+            recencyRank: [:]
+        ))
+        XCTAssertFalse(AntigravityRecency.isOrderedBefore(
+            cwd: "/a", lastActivity: older,
+            otherCwd: "/b", otherLastActivity: newer,
+            recencyRank: [:]
+        ))
+    }
+}
+
+/// Mirrors `CodexLivenessTests`: a live process can promote to `.active` regardless of stale
+/// mtime; without one, mtime only gates `.idle` vs. hidden. Antigravity's own addition — only the
+/// most-recently-touched workspace is ever eligible — is exercised here too.
+final class AntigravityLivenessTests: XCTestCase {
+    private let now = Date(timeIntervalSince1970: 10_000)
+
+    func testActiveOnlyWithProcessRunningAndMostRecent() {
+        XCTAssertEqual(
+            AntigravityLiveness.status(
+                isMostRecentlyTouchedWorkspace: true, processRunning: true, modifiedAt: now, now: now
+            ),
+            .active
+        )
+    }
+
+    func testProcessRunningButNotTheMostRecentWorkspaceIsIdleNotActive() {
+        XCTAssertEqual(
+            AntigravityLiveness.status(
+                isMostRecentlyTouchedWorkspace: false, processRunning: true, modifiedAt: now, now: now
+            ),
+            .idle
+        )
+    }
+
+    func testMostRecentWorkspaceWithNoLiveProcessIsIdleNotActive() {
+        XCTAssertEqual(
+            AntigravityLiveness.status(
+                isMostRecentlyTouchedWorkspace: true, processRunning: false, modifiedAt: now, now: now
+            ),
+            .idle
+        )
+    }
+
+    func testActiveRegardlessOfStaleMtimeWhenProcessRunningAndMostRecent() {
+        XCTAssertEqual(
+            AntigravityLiveness.status(
+                isMostRecentlyTouchedWorkspace: true,
+                processRunning: true,
+                modifiedAt: now.addingTimeInterval(-10_000),
+                now: now
+            ),
+            .active
+        )
+    }
+
+    func testHiddenPastTheThresholdWithoutALiveProcess() {
+        XCTAssertNil(
+            AntigravityLiveness.status(
+                isMostRecentlyTouchedWorkspace: true,
+                processRunning: false,
+                modifiedAt: now.addingTimeInterval(-3_600),
+                now: now
+            )
+        )
+    }
+}
+
+final class AntigravitySessionSourceTests: XCTestCase {
+    private let fixedNow = Date(timeIntervalSince1970: 1_786_000_000)
+
+    func testDiscoversWorkspaceFromWorkspaceJSON() throws {
+        let home = try makeTemporaryDirectory()
+        try makeWorkspace(in: home, hash: "abc123", folderPath: "/Users/me/project", ageSeconds: 60)
+
+        let discovered = AntigravitySessionSource(
+            antigravityHome: home,
+            isRunningProvider: { false },
+            agyAvailableProvider: { false }
+        ).discover(now: fixedNow)
+
+        let session = try XCTUnwrap(discovered.first)
+        XCTAssertEqual(session.agentName, "Antigravity")
+        XCTAssertEqual(session.cwd, "/Users/me/project")
+        XCTAssertEqual(session.title, "project")
+        XCTAssertEqual(session.sessionId, "antigravity:abc123")
+        XCTAssertNil(session.sessionFileURL)
+    }
+
+    func testSkipsMalformedOrMissingWorkspaceJSON() throws {
+        let home = try makeTemporaryDirectory()
+        try makeWorkspace(in: home, hash: "good", folderPath: "/Users/me/kept", ageSeconds: 60)
+
+        let corruptDirectory = home
+            .appendingPathComponent("User/workspaceStorage/corrupt", isDirectory: true)
+        try FileManager.default.createDirectory(at: corruptDirectory, withIntermediateDirectories: true)
+        try Data("not json at all".utf8).write(to: corruptDirectory.appendingPathComponent("workspace.json"))
+
+        // No workspace.json at all in this one.
+        let missingDirectory = home
+            .appendingPathComponent("User/workspaceStorage/missing", isDirectory: true)
+        try FileManager.default.createDirectory(at: missingDirectory, withIntermediateDirectories: true)
+
+        let discovered = AntigravitySessionSource(
+            antigravityHome: home,
+            isRunningProvider: { false },
+            agyAvailableProvider: { false }
+        ).discover(now: fixedNow)
+
+        XCTAssertEqual(discovered.map(\.cwd), ["/Users/me/kept"])
+    }
+
+    func testTitleIsTheFolderBasenameWithWordBoundaryTruncation() throws {
+        let home = try makeTemporaryDirectory()
+        let longName = Array(repeating: "word", count: 20).joined(separator: "-")
+        try makeWorkspace(in: home, hash: "abc", folderPath: "/Users/me/\(longName)", ageSeconds: 60)
+
+        let discovered = AntigravitySessionSource(
+            antigravityHome: home,
+            isRunningProvider: { false },
+            agyAvailableProvider: { false }
+        ).discover(now: fixedNow)
+
+        let title = try XCTUnwrap(discovered.first?.title)
+        XCTAssertEqual(title, SessionTitle.truncate(longName, max: 60))
+        XCTAssertLessThan(title.count, longName.count)
+    }
+
+    func testResumeCommandPresentOnlyWhenAgyIsAvailable() throws {
+        let home = try makeTemporaryDirectory()
+        try makeWorkspace(in: home, hash: "abc", folderPath: "/Users/me/project", ageSeconds: 60)
+
+        let withAgy = AntigravitySessionSource(
+            antigravityHome: home,
+            isRunningProvider: { false },
+            agyAvailableProvider: { true }
+        ).discover(now: fixedNow)
+        XCTAssertEqual(withAgy.first?.resumeCommand, "agy '/Users/me/project'")
+
+        let withoutAgy = AntigravitySessionSource(
+            antigravityHome: home,
+            isRunningProvider: { false },
+            agyAvailableProvider: { false }
+        ).discover(now: fixedNow)
+        XCTAssertNil(withoutAgy.first?.resumeCommand)
+    }
+
+    func testNoLiveProcessNeverMarksActiveEvenAsTheOnlyFreshWorkspace() throws {
+        let home = try makeTemporaryDirectory()
+        try makeWorkspace(in: home, hash: "abc", folderPath: "/Users/me/project", ageSeconds: 30)
+
+        let discovered = AntigravitySessionSource(
+            antigravityHome: home,
+            isRunningProvider: { false },
+            agyAvailableProvider: { false }
+        ).discover(now: fixedNow)
+
+        XCTAssertEqual(discovered.first?.status, .idle)
+    }
+
+    func testOnlyTheMostRecentlyTouchedWorkspaceCanBeActiveWhileAProcessRuns() throws {
+        let home = try makeTemporaryDirectory()
+        try makeWorkspace(in: home, hash: "recent", folderPath: "/Users/me/recent", ageSeconds: 30)
+        try makeWorkspace(in: home, hash: "older", folderPath: "/Users/me/older", ageSeconds: 600)
+
+        let discovered = AntigravitySessionSource(
+            antigravityHome: home,
+            isRunningProvider: { true },
+            agyAvailableProvider: { false }
+        ).discover(now: fixedNow)
+
+        let statusByPath = Dictionary(uniqueKeysWithValues: discovered.map { ($0.cwd, $0.status) })
+        XCTAssertEqual(statusByPath["/Users/me/recent"], .active)
+        XCTAssertEqual(statusByPath["/Users/me/older"], .idle)
+    }
+
+    func testHiddenThresholdDropsAStaleWorkspaceWithoutALiveProcess() throws {
+        let home = try makeTemporaryDirectory()
+        try makeWorkspace(in: home, hash: "abc", folderPath: "/Users/me/project", ageSeconds: 61 * 60.0)
+
+        let discovered = AntigravitySessionSource(
+            antigravityHome: home,
+            isRunningProvider: { false },
+            agyAvailableProvider: { false }
+        ).discover(now: fixedNow)
+
+        XCTAssertTrue(discovered.isEmpty)
+    }
+
+    func testRecencyOrderingFromStorageJSONIsAppliedOverIdenticalMtimes() throws {
+        let home = try makeTemporaryDirectory()
+        // Both workspaces share the same mtime — mtime alone cannot order them.
+        try makeWorkspace(in: home, hash: "a", folderPath: "/Users/me/a", ageSeconds: 60)
+        try makeWorkspace(in: home, hash: "b", folderPath: "/Users/me/b", ageSeconds: 60)
+
+        let globalStorageDirectory = home.appendingPathComponent("User/globalStorage", isDirectory: true)
+        try FileManager.default.createDirectory(at: globalStorageDirectory, withIntermediateDirectories: true)
+        let json = #"""
+        {"backupWorkspaces":{"folders":[
+            {"folderUri":"file:///Users/me/b"},
+            {"folderUri":"file:///Users/me/a"}
+        ]}}
+        """#
+        try Data(json.utf8).write(to: globalStorageDirectory.appendingPathComponent("storage.json"))
+
+        let discovered = AntigravitySessionSource(
+            antigravityHome: home,
+            isRunningProvider: { false },
+            agyAvailableProvider: { false }
+        ).discover(now: fixedNow)
+
+        XCTAssertEqual(discovered.map(\.cwd), ["/Users/me/b", "/Users/me/a"])
+    }
+
+    func testMissingStorageJSONIsTolerated() throws {
+        let home = try makeTemporaryDirectory()
+        try makeWorkspace(in: home, hash: "abc", folderPath: "/Users/me/project", ageSeconds: 60)
+        // No globalStorage/storage.json at all.
+
+        let discovered = AntigravitySessionSource(
+            antigravityHome: home,
+            isRunningProvider: { false },
+            agyAvailableProvider: { false }
+        ).discover(now: fixedNow)
+
+        XCTAssertEqual(discovered.map(\.cwd), ["/Users/me/project"])
+    }
+
+    func testMissingWorkspaceStorageDirectoryYieldsNoSessions() {
+        XCTAssertTrue(
+            AntigravitySessionSource(
+                antigravityHome: URL(fileURLWithPath: "/nonexistent/Antigravity IDE"),
+                isRunningProvider: { true },
+                agyAvailableProvider: { true }
+            ).discover(now: fixedNow).isEmpty
+        )
+    }
+
+    // MARK: - Fixtures
+
+    private func makeWorkspace(
+        in antigravityHome: URL,
+        hash: String,
+        folderPath: String,
+        ageSeconds: TimeInterval
+    ) throws {
+        let directory = antigravityHome
+            .appendingPathComponent("User/workspaceStorage", isDirectory: true)
+            .appendingPathComponent(hash, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let workspaceJSON = directory.appendingPathComponent("workspace.json")
+        try Data(#"{"folder":"file://\#(folderPath)"}"#.utf8).write(to: workspaceJSON)
+        let contentFile = directory.appendingPathComponent("state.vscdb")
+        try Data().write(to: contentFile)
+
+        // The directory and every file just written into it need an explicit mtime — otherwise
+        // each carries the real wall-clock time it was created, which (being "now", not
+        // `fixedNow`) would always outrank whatever age this fixture asked for.
+        let mtime = fixedNow.addingTimeInterval(-ageSeconds)
+        for url in [directory, workspaceJSON, contentFile] {
+            try FileManager.default.setAttributes([.modificationDate: mtime], ofItemAtPath: url.path)
+        }
+    }
+
+    private func makeTemporaryDirectory() throws -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        return url
+    }
+}
+
+/// The real jump-execution seam: `Jumper.resolvePlan` must never resolve an Antigravity session
+/// against the process table at all, since a Claude/Codex CLI process that merely shares its
+/// workspace's cwd would otherwise be mistaken for it (#3). `SessionStore.reconcile` is where
+/// that guard lives — this exercises it the same way `SessionIdentityTests` exercises the
+/// Claude/Codex jump rung, with a fake source standing in for real disk state.
+final class AntigravityJumpRoutingTests: XCTestCase {
+    private struct FakeSource: AgentSessionSource {
+        let agentName: String
+        let sessions: [DiscoveredSession]
+        func discover(now: Date) -> [DiscoveredSession] { sessions }
+    }
+
+    @MainActor
+    func testAntigravitySessionNeverSelectsATTYFocusRungEvenWhenATerminalProcessSharesItsCwd() throws {
+        let discovered = DiscoveredSession(
+            sessionId: "antigravity:abc",
+            agentName: "Antigravity",
+            cwd: "/repo",
+            title: "repo",
+            lastActivity: Date(timeIntervalSince1970: 1_000),
+            status: .idle,
+            resumeCommand: nil,
+            sessionFileURL: nil
+        )
+        // A live Claude CLI process at the very same cwd — the ordinary case a cwd-based match
+        // would otherwise seize on.
+        let claudeAtSameCwd = ClaudeProcess(pid: 42, command: "/usr/local/bin/claude", cwd: "/repo", tty: "ttys009")
+
+        let store = SessionStore(
+            sources: [FakeSource(agentName: "Antigravity", sessions: [discovered])],
+            processProvider: { [claudeAtSameCwd] }
+        )
+        store.refresh(now: Date(timeIntervalSince1970: 1_060))
+
+        let session = try XCTUnwrap(store.sessions.first)
+        XCTAssertEqual(session.agentName, "Antigravity")
+        XCTAssertEqual(session.jumpRung, .newTab)
+        XCTAssertNil(session.terminalName, "an Antigravity row must never imply terminal semantics")
+        XCTAssertNil(session.tty)
+    }
+}
+
+final class AntigravityLaunchCommandTests: XCTestCase {
+    func testUsesAgyWhenAvailable() {
+        let plan = Jumper.antigravityLaunchCommand(path: "/repo", agyAvailable: true)
+        XCTAssertEqual(plan.executable, "/usr/bin/env")
+        XCTAssertEqual(plan.arguments, ["agy", "/repo"])
+    }
+
+    func testFallsBackToOpenWhenAgyIsUnavailable() {
+        let plan = Jumper.antigravityLaunchCommand(path: "/repo", agyAvailable: false)
+        XCTAssertEqual(plan.executable, "/usr/bin/open")
+        XCTAssertEqual(plan.arguments, ["-a", "Antigravity IDE", "/repo"])
+    }
+}
+
+final class CmuxLauncherTests: XCTestCase {
+    override func tearDown() {
+        CmuxLauncher.resetCacheForTesting()
+    }
+
+    func testParseFocusSubcommandFindsAFocusKeyword() {
+        let help = """
+            Usage: cmux [command]
+
+            Commands:
+              focus <path>   Focus the window for a workspace
+              list           List open workspaces
+            """
+        XCTAssertEqual(CmuxLauncher.parseFocusSubcommand(help), "focus")
+    }
+
+    func testParseFocusSubcommandFindsAnActivateKeyword() {
+        XCTAssertEqual(
+            CmuxLauncher.parseFocusSubcommand("activate <path>  Activate cmux on a given workspace\n"),
+            "activate"
+        )
+    }
+
+    func testParseFocusSubcommandReturnsNilWhenNothingMatches() {
+        let help = "Usage: cmux [command]\n\nCommands:\n  list   List open workspaces\n"
+        XCTAssertNil(CmuxLauncher.parseFocusSubcommand(help))
+    }
+
+    func testAttemptFocusReturnsFalseAndNeverProbesWhenCmuxIsNotAvailable() {
+        let handled = CmuxLauncher.attemptFocus(
+            cwd: "/repo",
+            isAvailable: { false },
+            focusSubcommand: { XCTFail("must not probe for a subcommand when cmux isn't installed"); return nil },
+            runCmux: { _, _ in XCTFail("must not run cmux when it isn't installed"); return false },
+            activate: { XCTFail("must not activate cmux when it isn't installed"); return false }
+        )
+        XCTAssertFalse(handled)
+    }
+
+    func testAttemptFocusUsesTheSubcommandWhenItSucceeds() {
+        var ranWith: (subcommand: String, cwd: String)?
+        let handled = CmuxLauncher.attemptFocus(
+            cwd: "/repo",
+            isAvailable: { true },
+            focusSubcommand: { "focus" },
+            runCmux: { subcommand, cwd in
+                ranWith = (subcommand, cwd)
+                return true
+            },
+            activate: { XCTFail("must not fall back to activation once the subcommand succeeds"); return false }
+        )
+        XCTAssertTrue(handled)
+        XCTAssertEqual(ranWith?.subcommand, "focus")
+        XCTAssertEqual(ranWith?.cwd, "/repo")
+    }
+
+    func testAttemptFocusFallsBackToActivationWhenNoSubcommandExists() {
+        var activated = false
+        let handled = CmuxLauncher.attemptFocus(
+            cwd: "/repo",
+            isAvailable: { true },
+            focusSubcommand: { nil },
+            runCmux: { _, _ in XCTFail("no subcommand was found; must not attempt to run one"); return false },
+            activate: {
+                activated = true
+                return true
+            }
+        )
+        XCTAssertTrue(handled)
+        XCTAssertTrue(activated)
+    }
+
+    func testAttemptFocusFallsBackToActivationWhenTheSubcommandFails() {
+        var activated = false
+        let handled = CmuxLauncher.attemptFocus(
+            cwd: "/repo",
+            isAvailable: { true },
+            focusSubcommand: { "focus" },
+            runCmux: { _, _ in false },
+            activate: {
+                activated = true
+                return true
+            }
+        )
+        XCTAssertTrue(handled)
+        XCTAssertTrue(activated)
+    }
+}
