@@ -3,24 +3,59 @@ import SQLite3
 
 struct WarpTabLocator {
     private let databaseURL: URL
+    private let cache: WarpDatabaseAccessCache
+    private let reuseWindow: TimeInterval
+    private let now: () -> Date
 
-    init(databaseURL: URL = WarpTabLocator.defaultDatabaseURL) {
+    init(
+        databaseURL: URL = WarpTabLocator.defaultDatabaseURL,
+        cache: WarpDatabaseAccessCache = .shared,
+        reuseWindow: TimeInterval = 5,
+        now: @escaping () -> Date = Date.init
+    ) {
         self.databaseURL = databaseURL
+        self.cache = cache
+        self.reuseWindow = reuseWindow
+        self.now = now
     }
 
     func tabIndex(forCwd cwd: String) -> Int? {
+        guard let copiedDatabaseURL = workingCopy() else { return nil }
+
+        var database: OpaquePointer?
+        let flags = SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX
+        guard sqlite3_open_v2(copiedDatabaseURL.path, &database, flags, nil) == SQLITE_OK,
+              let database else {
+            if database != nil { sqlite3_close(database) }
+            return nil
+        }
+        defer { sqlite3_close(database) }
+
+        return tabIndex(in: database, forCwd: cwd)
+    }
+
+    /// A readable snapshot of Warp's sqlite files. sqlite cannot safely open the live database
+    /// another process is writing, so it is copied first — but the copy is what reaches into the
+    /// TCC-gated group container, so it is made at most once per `reuseWindow` and never again
+    /// once macOS has refused (#20).
+    private func workingCopy() -> URL? {
+        guard !cache.isDenied(databaseURL) else { return nil }
+
         let fileManager = FileManager.default
+        if let reusable = cache.reusableCopy(for: databaseURL, now: now(), within: reuseWindow),
+           fileManager.fileExists(atPath: reusable.path) {
+            return reusable
+        }
+
         let directory = fileManager.temporaryDirectory.appendingPathComponent(
             "VibeNotch-Warp-\(UUID().uuidString)",
             isDirectory: true
         )
-
         do {
             try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         } catch {
             return nil
         }
-        defer { try? fileManager.removeItem(at: directory) }
 
         let copiedDatabaseURL = directory.appendingPathComponent(databaseURL.lastPathComponent)
         do {
@@ -34,19 +69,18 @@ struct WarpTabLocator {
                 )
             }
         } catch {
+            // Every read the container refuses re-triggers the consent prompt, and the three
+            // files share one gate — so any failure here retires this database for the launch
+            // and the caller silently falls back to opening a new tab.
+            cache.markDenied(databaseURL)
+            try? fileManager.removeItem(at: directory)
             return nil
         }
 
-        var database: OpaquePointer?
-        let flags = SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX
-        guard sqlite3_open_v2(copiedDatabaseURL.path, &database, flags, nil) == SQLITE_OK,
-              let database else {
-            if database != nil { sqlite3_close(database) }
-            return nil
+        if let previous = cache.store(copy: copiedDatabaseURL, for: databaseURL, at: now()) {
+            try? fileManager.removeItem(at: previous.deletingLastPathComponent())
         }
-        defer { sqlite3_close(database) }
-
-        return tabIndex(in: database, forCwd: cwd)
+        return copiedDatabaseURL
     }
 
     private func tabIndex(in database: OpaquePointer, forCwd cwd: String) -> Int? {

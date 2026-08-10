@@ -40,6 +40,61 @@ final class ActionInjectorTests: XCTestCase {
         XCTAssertNil(ActionInjector.plan(terminalName: "iTerm", tty: nil, decision: .allow))
     }
 
+    func testWarpMapsAllowToOneAndDenyToEscapeUsingCwd() {
+        XCTAssertEqual(
+            ActionInjector.plan(
+                terminalName: "Warp", tty: nil, cwd: "/repo", decision: .allow
+            ),
+            .warp(cwd: "/repo", key: .text("1"))
+        )
+        XCTAssertEqual(
+            ActionInjector.plan(
+                terminalName: "warp", tty: nil, cwd: "/repo", decision: .deny
+            ),
+            .warp(cwd: "/repo", key: .escape)
+        )
+    }
+
+    func testWarpMapsOptionDigitsToThatDigit() {
+        for number in 1...9 {
+            XCTAssertEqual(
+                ActionInjector.plan(
+                    terminalName: "Warp", tty: nil, cwd: "/repo", digit: String(number)
+                ),
+                .warp(cwd: "/repo", key: .text(String(number)))
+            )
+        }
+    }
+
+    // Warp exposes no per-tab tty, so the tty must never decide the plan for it.
+    func testWarpIgnoresTTYAndRequiresCwd() {
+        XCTAssertEqual(
+            ActionInjector.plan(
+                terminalName: "Warp", tty: "ttys004", cwd: "/repo", decision: .allow
+            ),
+            .warp(cwd: "/repo", key: .text("1"))
+        )
+        XCTAssertNil(
+            ActionInjector.plan(terminalName: "Warp", tty: "ttys004", cwd: "", decision: .allow)
+        )
+        XCTAssertNil(
+            ActionInjector.plan(terminalName: "Warp", tty: "ttys004", cwd: nil, decision: .allow)
+        )
+    }
+
+    // A cwd is available for every session, so it must not divert the tty-based terminals.
+    func testCwdDoesNotDivertTTYBasedTerminals() {
+        XCTAssertEqual(
+            ActionInjector.plan(
+                terminalName: "iTerm", tty: "ttys001", cwd: "/repo", decision: .allow
+            ),
+            .iTerm(tty: "ttys001", key: .text("1"))
+        )
+        XCTAssertNil(
+            ActionInjector.plan(terminalName: "Ghostty", tty: "ttys001", cwd: "/repo", decision: .allow)
+        )
+    }
+
     func testSupportedTerminalsMapOptionDigitsToTextKeystrokes() {
         for number in 1...9 {
             let digit = String(number)

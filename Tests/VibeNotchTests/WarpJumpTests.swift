@@ -145,4 +145,134 @@ final class WarpFocuserTests: XCTestCase {
         XCTAssertNil(WarpFocuser.keyCode(forTabIndex: 0))
         XCTAssertNil(WarpFocuser.keyCode(forTabIndex: 10))
     }
+
+    func testAnswerKeysMapToDigitKeyCodesAndEscape() {
+        XCTAssertEqual(WarpFocuser.keyCode(forAnswer: .text("1")), 18)
+        XCTAssertEqual(
+            (1...9).compactMap { WarpFocuser.keyCode(forAnswer: .text(String($0))) },
+            [18, 19, 20, 21, 23, 22, 26, 28, 25]
+        )
+        XCTAssertEqual(WarpFocuser.keyCode(forAnswer: .escape), 53)
+    }
+
+    func testAnswerKeysRejectAnythingButASingleDigit() {
+        XCTAssertNil(WarpFocuser.keyCode(forAnswer: .text("0")))
+        XCTAssertNil(WarpFocuser.keyCode(forAnswer: .text("10")))
+        XCTAssertNil(WarpFocuser.keyCode(forAnswer: .text("y")))
+        XCTAssertNil(WarpFocuser.keyCode(forAnswer: .text("")))
+    }
+}
+
+/// Reading Warp's group container is TCC-gated and re-prompts on every attempt, so these cover
+/// the "ask once per launch" contract (#20) against fixture databases only — never the real one.
+final class WarpDatabaseAccessCacheTests: XCTestCase {
+    func testDenialIsRememberedAndNeverRetried() throws {
+        let directory = try makeTemporaryDirectory()
+        let databaseURL = directory.appendingPathComponent("warp.sqlite")
+        let cache = WarpDatabaseAccessCache()
+        let locator = WarpTabLocator(databaseURL: databaseURL, cache: cache)
+
+        // Nothing readable there yet: this stands in for macOS refusing the container.
+        XCTAssertNil(locator.tabIndex(forCwd: "/repo"))
+        XCTAssertTrue(cache.isDenied(databaseURL))
+
+        // Make the database perfectly readable. A retry would now succeed — so still getting
+        // nil is what proves the container is never touched again this launch.
+        try makeFixtureDatabase(at: databaseURL, tabs: ["/repo"])
+        XCTAssertNil(locator.tabIndex(forCwd: "/repo"))
+    }
+
+    func testSuccessfulReadIsReusedWithinTheWindowAndRefreshedAfterIt() throws {
+        let directory = try makeTemporaryDirectory()
+        let databaseURL = directory.appendingPathComponent("warp.sqlite")
+        try makeFixtureDatabase(at: databaseURL, tabs: ["/repo"])
+
+        var clock = Date(timeIntervalSinceReferenceDate: 0)
+        let locator = WarpTabLocator(
+            databaseURL: databaseURL,
+            cache: WarpDatabaseAccessCache(),
+            reuseWindow: 5,
+            now: { clock }
+        )
+
+        XCTAssertEqual(locator.tabIndex(forCwd: "/repo"), 1)
+
+        // Move the target to tab 2 in the source. Still seeing 1 proves the cached copy was
+        // reused rather than the group container being read a second time.
+        try makeFixtureDatabase(at: databaseURL, tabs: ["/other", "/repo"])
+        clock = Date(timeIntervalSinceReferenceDate: 4)
+        XCTAssertEqual(locator.tabIndex(forCwd: "/repo"), 1)
+
+        clock = Date(timeIntervalSinceReferenceDate: 6)
+        XCTAssertEqual(locator.tabIndex(forCwd: "/repo"), 2)
+    }
+
+    func testCacheIsKeyedPerDatabaseSoOneDenialDoesNotBlockAnother() throws {
+        let directory = try makeTemporaryDirectory()
+        let missingURL = directory.appendingPathComponent("missing.sqlite")
+        let presentURL = directory.appendingPathComponent("present.sqlite")
+        try makeFixtureDatabase(at: presentURL, tabs: ["/repo"])
+        let cache = WarpDatabaseAccessCache()
+
+        XCTAssertNil(WarpTabLocator(databaseURL: missingURL, cache: cache).tabIndex(forCwd: "/repo"))
+        XCTAssertTrue(cache.isDenied(missingURL))
+        XCTAssertFalse(cache.isDenied(presentURL))
+        XCTAssertEqual(
+            WarpTabLocator(databaseURL: presentURL, cache: cache).tabIndex(forCwd: "/repo"),
+            1
+        )
+    }
+
+    private func makeTemporaryDirectory() throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        return directory
+    }
+
+    /// One window, `tabs` in order, the last one focused.
+    private func makeFixtureDatabase(at url: URL, tabs: [String]) throws {
+        for suffix in ["", "-wal", "-shm"] {
+            try? FileManager.default.removeItem(at: URL(fileURLWithPath: url.path + suffix))
+        }
+
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(url.path, &database), SQLITE_OK)
+        let openedDatabase = try XCTUnwrap(database)
+        defer { sqlite3_close(openedDatabase) }
+
+        var sql = """
+            CREATE TABLE terminal_panes (id INTEGER PRIMARY KEY, cwd TEXT NOT NULL);
+            CREATE TABLE pane_leaves (
+                pane_node_id INTEGER NOT NULL,
+                kind TEXT NOT NULL,
+                is_focused INTEGER
+            );
+            CREATE TABLE pane_nodes (id INTEGER PRIMARY KEY, tab_id INTEGER NOT NULL);
+            CREATE TABLE tabs (id INTEGER PRIMARY KEY, window_id INTEGER NOT NULL);
+
+            """
+        for (offset, cwd) in tabs.enumerated() {
+            let tabID = (offset + 1) * 10
+            let paneID = tabID * 10
+            let isFocused = offset == tabs.count - 1 ? 1 : 0
+            sql += """
+                INSERT INTO tabs VALUES (\(tabID), 1);
+                INSERT INTO pane_nodes VALUES (\(paneID), \(tabID));
+                INSERT INTO terminal_panes VALUES (\(paneID), '\(cwd)');
+                INSERT INTO pane_leaves VALUES (\(paneID), 'terminal', \(isFocused));
+
+                """
+        }
+
+        var error: UnsafeMutablePointer<CChar>?
+        guard sqlite3_exec(openedDatabase, sql, nil, nil, &error) == SQLITE_OK else {
+            let message = error.map { String(cString: $0) } ?? "Unknown SQLite error"
+            sqlite3_free(error)
+            throw NSError(domain: "WarpDatabaseAccessCacheTests", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: message
+            ])
+        }
+    }
 }

@@ -40,6 +40,7 @@ struct FeaturedSessionCard: View {
         .buttonStyle(.plain)
         .accessibilityLabel("\(session.title), \(statusLabel)")
         .accessibilityHint("Jump to terminal")
+        .firstMouseAction(onClick)
     }
 
     @ViewBuilder
@@ -112,6 +113,7 @@ struct CompactSessionRow: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("\(session.title), open terminal")
+        .firstMouseAction(onClick)
     }
 }
 
@@ -282,6 +284,7 @@ struct QuestionPromptCard: View {
         .buttonStyle(.plain)
         .keyboardShortcut(KeyEquivalent(Character(String(number))), modifiers: .command)
         .accessibilityLabel("Option \(number): \(label)")
+        .firstMouseAction { onSelect(number) }
     }
 }
 
@@ -328,6 +331,10 @@ private struct ActionButtons: View {
     var body: some View {
         HStack {
             Spacer()
+            // `.firstMouseAction` last, so the catcher covers the whole drawn capsule rather
+            // than the bare Button frame the padding sits outside of. `.keyboardShortcut` is
+            // kept for when VibeNotch itself is active; CardShortcutMonitor covers the normal
+            // case, where the user is typing in their terminal and this panel is never key.
             Button(negativeTitle) { onDecision(.deny) }
                 .buttonStyle(.plain)
                 .keyboardShortcut("n", modifiers: .command)
@@ -335,6 +342,7 @@ private struct ActionButtons: View {
                 .padding(.vertical, 7)
                 .foregroundStyle(.white)
                 .background(Color.vibeBadge, in: Capsule())
+                .firstMouseAction { onDecision(.deny) }
 
             Button(positiveTitle) { onDecision(.allow) }
                 .buttonStyle(.plain)
@@ -343,6 +351,7 @@ private struct ActionButtons: View {
                 .padding(.vertical, 7)
                 .foregroundStyle(.black)
                 .background(.white, in: Capsule())
+                .firstMouseAction { onDecision(.allow) }
         }
     }
 }

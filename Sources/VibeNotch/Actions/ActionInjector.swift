@@ -14,19 +14,30 @@ enum ActionInjectionPlan: Equatable, Sendable {
     case iTerm(tty: String, key: InjectionKey)
     case tmux(tty: String, key: InjectionKey)
     case terminal(tty: String, key: InjectionKey)
+    /// Warp exposes no per-tab tty, so its tab is located by cwd through the state database.
+    case warp(cwd: String, key: InjectionKey)
 }
 
 struct ActionInjector {
     private let appleScript = AppleScriptRunner()
+    private let warpTabLocator = WarpTabLocator()
+    private let warpFocuser = WarpFocuser()
+
+    /// How long the Warp tab switch is given to land before the answer key is posted. Without
+    /// it the digit races the ⌘N tab switch and gets typed into whichever tab was focused
+    /// before — answering the wrong session.
+    private static let warpTabSettle: TimeInterval = 0.2
 
     static func plan(
         terminalName: String?,
         tty: String?,
+        cwd: String? = nil,
         decision: ActionDecision
     ) -> ActionInjectionPlan? {
         plan(
             terminalName: terminalName,
             tty: tty,
+            cwd: cwd,
             key: decision == .allow ? .text("1") : .escape
         )
     }
@@ -34,18 +45,25 @@ struct ActionInjector {
     static func plan(
         terminalName: String?,
         tty: String?,
+        cwd: String? = nil,
         digit: String
     ) -> ActionInjectionPlan? {
         guard digit.count == 1, "123456789".contains(digit) else { return nil }
-        return plan(terminalName: terminalName, tty: tty, key: .text(digit))
+        return plan(terminalName: terminalName, tty: tty, cwd: cwd, key: .text(digit))
     }
 
     private static func plan(
         terminalName: String?,
         tty: String?,
+        cwd: String?,
         key: InjectionKey
     ) -> ActionInjectionPlan? {
-        guard let terminalName, let tty, !tty.isEmpty else { return nil }
+        guard let terminalName else { return nil }
+        if terminalName.lowercased() == "warp" {
+            guard let cwd, !cwd.isEmpty else { return nil }
+            return .warp(cwd: cwd, key: key)
+        }
+        guard let tty, !tty.isEmpty else { return nil }
         let normalizedTTY = tty.hasPrefix("/dev/") ? String(tty.dropFirst(5)) : tty
         switch terminalName.lowercased() {
         case "iterm", "iterm2": return .iTerm(tty: normalizedTTY, key: key)
@@ -60,6 +78,7 @@ struct ActionInjector {
         guard let plan = Self.plan(
             terminalName: session.terminalName,
             tty: session.tty,
+            cwd: session.cwd,
             decision: decision
         ) else { return false }
         return inject(plan)
@@ -70,17 +89,32 @@ struct ActionInjector {
         guard let plan = Self.plan(
             terminalName: session.terminalName,
             tty: session.tty,
+            cwd: session.cwd,
             digit: digit
         ) else { return false }
         return inject(plan)
     }
 
+    @MainActor
     private func inject(_ plan: ActionInjectionPlan) -> Bool {
         switch plan {
         case let .iTerm(tty, key): return injectITerm(tty: tty, key: key)
         case let .tmux(tty, key): return injectTmux(tty: tty, key: key)
         case let .terminal(tty, key): return injectTerminal(tty: tty, key: key)
+        case let .warp(cwd, key): return injectWarp(cwd: cwd, key: key)
         }
+    }
+
+    /// Focus the session's Warp tab, then type the answer into it. Returning `false` leaves the
+    /// caller to fall back to a plain jump, so the user can still answer by hand when
+    /// Accessibility is not granted or the tab cannot be located.
+    @MainActor
+    private func injectWarp(cwd: String, key: InjectionKey) -> Bool {
+        guard WarpFocuser.keyCode(forAnswer: key) != nil,
+              let tabIndex = warpTabLocator.tabIndex(forCwd: cwd),
+              warpFocuser.focus(tabIndex: tabIndex) else { return false }
+        Thread.sleep(forTimeInterval: Self.warpTabSettle)
+        return warpFocuser.answer(key)
     }
 
     private func injectITerm(tty: String, key: InjectionKey) -> Bool {
