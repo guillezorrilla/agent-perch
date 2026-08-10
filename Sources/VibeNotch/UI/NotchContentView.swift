@@ -81,18 +81,18 @@ struct NotchContentView: View {
         SessionLayout.split(sessions: store.sessions)
     }
 
-    /// The topmost full card currently showing a pending-action card. Only this one owns the
-    /// global `CardShortcutMonitor` — if more than one session somehow needs an answer at
-    /// once, every one of them still renders its permission/plan/question card (a full card
-    /// never shows both that and its normal body), but ⌘Y/⌘N/⌘1…9 answer whichever renders
-    /// on top; the rest stay reachable by clicking or jumping to the terminal.
+    /// The topmost full card still waiting for an answer. Only this one owns the global
+    /// `CardShortcutMonitor` — if more than one session somehow needs an answer at once, every
+    /// one of them still renders its permission/plan/question card (a full card never shows both
+    /// that and its normal body), but ⌘Y/⌘N/⌘1…9 answer whichever renders on top; the rest stay
+    /// reachable by clicking or jumping to the terminal.
+    ///
+    /// Already-answered cards are skipped, so the monitor moves on with the cards and a card
+    /// showing "Approved ✓" can never be answered a second time from the keyboard.
     private var topmostPendingCard: (session: AgentSession, pending: PendingAction)? {
         for session in layout.fullCards {
-            guard session.status == .needsAction,
-                  let pending = PendingAction.parse(
-                      toolName: session.pendingToolName,
-                      input: session.pendingToolInput
-                  ) else { continue }
+            guard store.resolutions[session.sessionId] == nil,
+                  let pending = session.pendingAction else { continue }
             return (session, pending)
         }
         return nil
@@ -100,11 +100,12 @@ struct NotchContentView: View {
 
     @ViewBuilder
     private func fullCard(for session: AgentSession) -> some View {
-        if session.status == .needsAction,
-           let pending = PendingAction.parse(
-               toolName: session.pendingToolName,
-               input: session.pendingToolInput
-           ) {
+        if let resolution = store.resolutions[session.sessionId] {
+            ResolvedActionCard(resolution: resolution) {
+                store.clearResolution(session.sessionId)
+                jump(to: session)
+            }
+        } else if let pending = session.pendingAction {
             if session.id == topmostPendingCard?.session.id {
                 // The monitor's lifetime is the card's: SwiftUI tears this branch down when
                 // the panel collapses or the session stops needing an answer, so the global
@@ -162,26 +163,43 @@ struct NotchContentView: View {
     }
 
     private func respond(_ decision: ActionDecision, to session: AgentSession) {
-        if actionInjector.inject(decision, into: session) {
-            actions.collapse()
-        } else {
-            jump(to: session)
-        }
+        answer(
+            in: session,
+            label: decision == .allow ? "Approved ✓" : "Denied ✕",
+            inject: { actionInjector.inject(decision, into: session) }
+        )
     }
 
     private func respond(_ option: Int, to prompt: QuestionPrompt, in session: AgentSession) {
+        // A multi-select question can't be answered by typing one digit, and a number we never
+        // rendered would pick something at random — both are the user's to do by hand.
         guard !prompt.multiSelect, prompt.options.indices.contains(option - 1) else {
             jump(to: session)
             return
         }
-        respond(option: option, in: session)
+        answer(
+            in: session,
+            label: "\(prompt.options[option - 1]) ✓",
+            inject: { actionInjector.inject(String(option), into: session) }
+        )
     }
 
     private func respond(option: Int, in session: AgentSession) {
-        if actionInjector.inject(String(option), into: session) {
-            actions.collapse()
+        answer(
+            in: session,
+            label: "Option \(option) ✓",
+            inject: { actionInjector.inject(String(option), into: session) }
+        )
+    }
+
+    /// Every answer lands here, so the card always says what happened to it. The panel is NOT
+    /// collapsed on the spot any more — the store holds the confirmation for a beat and calls
+    /// back for the close, or leaves the card up saying nothing was typed.
+    private func answer(in session: AgentSession, label: String, inject: () -> Bool) {
+        if inject() {
+            store.markAnswered(session.sessionId, label: label)
         } else {
-            jump(to: session)
+            store.markUnanswerable(session.sessionId)
         }
     }
 

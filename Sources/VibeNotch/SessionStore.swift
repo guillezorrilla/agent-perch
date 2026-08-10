@@ -9,7 +9,17 @@ struct SessionTransition: Equatable, Sendable {
 @MainActor
 final class SessionStore: ObservableObject {
     @Published private(set) var sessions: [AgentSession] = []
+    /// How each session's card was answered, keyed by session id. Lives here rather than in the
+    /// card's own `@State` because DynamicNotchKit tears the panel down and rebuilds it on every
+    /// expand (DynamicNotch.swift:352) — view state would be gone before the user read it.
+    @Published private(set) var resolutions: [String: ActionResolution] = [:]
     var onTransition: ((SessionTransition) -> Void)?
+    /// Fired when an answered card's confirmation has been on screen for its hold and the card is
+    /// dropped — the panel close the answer implied, deferred until the feedback actually landed.
+    var onAnswerDismissed: (() -> Void)?
+
+    /// How long "Approved ✓" stays up before the card falls back to the session's normal body.
+    nonisolated static let answerHold: TimeInterval = 1.0
 
     let projectsDirectory: URL
     let codexHome: URL
@@ -18,6 +28,7 @@ final class SessionStore: ObservableObject {
     private let terminalResolver: TerminalNameResolver
     private var discoveredSessions: [String: DiscoveredSession] = [:]
     private var hookStates: [String: HookState] = [:]
+    private var answerHoldTasks: [String: Task<Void, Never>] = [:]
 
     init(
         projectsDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
@@ -114,6 +125,18 @@ final class SessionStore: ObservableObject {
             return nil
         }
 
+        // The agent moved on, so a "couldn't answer" banner about a request that no longer exists
+        // is stale. An `.answered` confirmation is left alone by everything EXCEPT a fresh
+        // notification: its hold owns it, so the user still sees the feedback when the next tool
+        // call lands milliseconds later — but a new notification means something new is waiting,
+        // and holding a stale "Approved ✓" over it would swallow that request.
+        switch (resolutions[sessionID], event.event) {
+        case (.some(.failed), _), (.some(.answered), "Notification"):
+            clearResolution(sessionID)
+        default:
+            break
+        }
+
         hookStates[sessionID] = state
         reconcile(now: now)
         guard let session = sessions.first(where: { $0.sessionId == sessionID }),
@@ -132,6 +155,73 @@ final class SessionStore: ObservableObject {
 
     func removeEndedSessions(now: Date = Date()) {
         reconcile(now: now)
+    }
+
+    /// Whether any card on screen is still waiting on the user. The needs-action dwell timer
+    /// checks this: a diff takes longer than five seconds to read, and a panel that closes
+    /// mid-decision takes the decision away. A failed answer still counts — that card is asking
+    /// the user to go do it by hand — while an answered one does not; its own hold owns it.
+    var hasUnresolvedPendingAction: Bool {
+        sessions.contains { session in
+            guard session.pendingAction != nil else { return false }
+            switch resolutions[session.sessionId] {
+            case .answered: return false
+            case .failed, nil: return true
+            }
+        }
+    }
+
+    /// Whether the panel is still the user's turn: a card waiting for an answer, or one showing
+    /// the answer it just took. The dwell must not close either out from under them — a
+    /// confirmation nobody saw is the same as no confirmation at all.
+    var hasCardAwaitingUser: Bool {
+        !resolutions.isEmpty || hasUnresolvedPendingAction
+    }
+
+    /// The answer went in. Show the confirmation, then drop the card back to the session's normal
+    /// body — the pending action is cleared with it, so the card cannot pop straight back up
+    /// while we wait for the agent's next hook event.
+    func markAnswered(_ sessionID: String, label: String, hold: TimeInterval = answerHold) {
+        resolutions[sessionID] = .answered(label)
+        answerHoldTasks[sessionID]?.cancel()
+        answerHoldTasks[sessionID] = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(hold))
+            guard !Task.isCancelled else { return }
+            self?.dismissAnswered(sessionID)
+        }
+    }
+
+    /// Nothing was typed anywhere — no terminal we can drive, or Accessibility is not granted.
+    /// The card stays until the user dismisses it or the agent moves on, so the request does not
+    /// silently vanish having never been answered.
+    func markUnanswerable(_ sessionID: String) {
+        answerHoldTasks[sessionID]?.cancel()
+        answerHoldTasks[sessionID] = nil
+        resolutions[sessionID] = .failed
+    }
+
+    /// The user acted on a card we couldn't answer for them (jumped to the terminal to do it by
+    /// hand) — the banner has served its purpose.
+    func clearResolution(_ sessionID: String) {
+        answerHoldTasks[sessionID]?.cancel()
+        answerHoldTasks[sessionID] = nil
+        resolutions[sessionID] = nil
+    }
+
+    /// The end of an answered card's life, split out of the hold so it is testable without
+    /// waiting a second for it.
+    func dismissAnswered(_ sessionID: String) {
+        answerHoldTasks[sessionID]?.cancel()
+        answerHoldTasks[sessionID] = nil
+        guard resolutions.removeValue(forKey: sessionID) != nil else { return }
+        if var state = hookStates[sessionID] {
+            state.notificationMessage = nil
+            state.pendingToolName = nil
+            state.pendingToolInput = nil
+            hookStates[sessionID] = state
+            reconcile(now: Date())
+        }
+        onAnswerDismissed?()
     }
 
     private func reconcile(now: Date) {

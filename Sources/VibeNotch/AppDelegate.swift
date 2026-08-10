@@ -75,6 +75,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             notifier?.handle(transition, soundsEnabled: settings.soundsEnabled)
         }
+        // The close an answered card implies, deferred until its confirmation has been seen.
+        store.onAnswerDismissed = { [weak self] in self?.collapseNotch() }
 
         // One FSEvents watcher across every agent source: Claude's projects directory, plus
         // Codex's sessions directory and session index. Generalized from the original
@@ -342,10 +344,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // Hook events arrive continuously while an agent works, so this timer fires
                 // constantly. Collapsing on it while the cursor is in the panel is the whole
                 // difference between a stable panel and a five-second flicker — wait instead.
-                guard hoverController.isMouseInside() else {
-                    restToBaseState()
-                    return
+                //
+                // A card still waiting for an answer holds the panel open for the same reason,
+                // only more so: five seconds is not long enough to read a diff and decide, and
+                // the dwell is meant to clean up alerts nobody acted on, not to withdraw the
+                // question. Hover's own exit rules still close it once the cursor visits and
+                // leaves, and answering or dismissing ends it immediately.
+                guard !hoverController.isMouseInside(), !store.hasCardAwaitingUser else {
+                    continue
                 }
+                restToBaseState()
+                return
             } while !Task.isCancelled
         }
     }
