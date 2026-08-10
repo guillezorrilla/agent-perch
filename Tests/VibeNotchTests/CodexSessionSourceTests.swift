@@ -167,8 +167,8 @@ final class CodexSessionSourceTests: XCTestCase {
     func testFreshnessThresholdsMirrorTheClaudeThresholds() throws {
         let codexHome = try makeFixture(sessions: [
             (id: "active", threadName: nil, cwd: "/tmp/active", ageSeconds: 60),
-            (id: "idle", threadName: nil, cwd: "/tmp/idle", ageSeconds: 30 * 60),
-            (id: "hidden", threadName: nil, cwd: "/tmp/hidden", ageSeconds: 61 * 60)
+            (id: "idle", threadName: nil, cwd: "/tmp/idle", ageSeconds: 30 * 60.0),
+            (id: "hidden", threadName: nil, cwd: "/tmp/hidden", ageSeconds: 61 * 60.0)
         ])
         let discovered = CodexSessionSource(codexHome: codexHome).discover(now: fixedNow)
         let statusByID = Dictionary(uniqueKeysWithValues: discovered.map { ($0.sessionId, $0.status) })
