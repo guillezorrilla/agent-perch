@@ -1,12 +1,25 @@
 name: CI
 
+# macOS runners bill at 10x minutes, and running on every push exhausted the
+# included quota. Verification is done locally before every commit (swift build
+# -c release, swift test, make app); this workflow is now opt-in so it costs
+# nothing until deliberately invoked.
+#
+# To re-enable automatic runs once quota allows, uncomment the `push:` trigger
+# (or add a self-hosted runner and change runs-on to [self-hosted, macOS]).
 on:
-  push:
+  workflow_dispatch:
   pull_request:
+    types: [opened, synchronize, reopened]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
     runs-on: macos-15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - name: Build release
