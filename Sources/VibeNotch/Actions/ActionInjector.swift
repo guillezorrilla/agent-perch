@@ -24,9 +24,29 @@ struct ActionInjector {
         tty: String?,
         decision: ActionDecision
     ) -> ActionInjectionPlan? {
+        plan(
+            terminalName: terminalName,
+            tty: tty,
+            key: decision == .allow ? .text("1") : .escape
+        )
+    }
+
+    static func plan(
+        terminalName: String?,
+        tty: String?,
+        digit: String
+    ) -> ActionInjectionPlan? {
+        guard digit.count == 1, "123456789".contains(digit) else { return nil }
+        return plan(terminalName: terminalName, tty: tty, key: .text(digit))
+    }
+
+    private static func plan(
+        terminalName: String?,
+        tty: String?,
+        key: InjectionKey
+    ) -> ActionInjectionPlan? {
         guard let terminalName, let tty, !tty.isEmpty else { return nil }
         let normalizedTTY = tty.hasPrefix("/dev/") ? String(tty.dropFirst(5)) : tty
-        let key: InjectionKey = decision == .allow ? .text("1") : .escape
         switch terminalName.lowercased() {
         case "iterm", "iterm2": return .iTerm(tty: normalizedTTY, key: key)
         case "tmux": return .tmux(tty: normalizedTTY, key: key)
@@ -42,7 +62,20 @@ struct ActionInjector {
             tty: session.tty,
             decision: decision
         ) else { return false }
+        return inject(plan)
+    }
 
+    @MainActor
+    func inject(_ digit: String, into session: AgentSession) -> Bool {
+        guard let plan = Self.plan(
+            terminalName: session.terminalName,
+            tty: session.tty,
+            digit: digit
+        ) else { return false }
+        return inject(plan)
+    }
+
+    private func inject(_ plan: ActionInjectionPlan) -> Bool {
         switch plan {
         case let .iTerm(tty, key): return injectITerm(tty: tty, key: key)
         case let .tmux(tty, key): return injectTmux(tty: tty, key: key)
@@ -52,9 +85,13 @@ struct ActionInjector {
 
     private func injectITerm(tty: String, key: InjectionKey) -> Bool {
         let target = AppleScriptRunner.stringLiteral("/dev/\(tty)")
-        let write = key == .escape
-            ? "write text (character id 27) newline NO"
-            : "write text \"1\" newline NO"
+        let write: String
+        switch key {
+        case .escape:
+            write = "write text (character id 27) newline NO"
+        case let .text(text):
+            write = "write text \"\(AppleScriptRunner.stringLiteral(text))\" newline NO"
+        }
         return appleScript.run("""
         tell application id "com.googlecode.iterm2"
             repeat with aWindow in windows
@@ -88,7 +125,11 @@ struct ActionInjector {
             return paneTTY == tty[...] ? String(fields[0]) : nil
         }.first
         guard let pane else { return false }
-        let keyName = key == .escape ? "Escape" : "1"
+        let keyName: String
+        switch key {
+        case .escape: keyName = "Escape"
+        case let .text(text): keyName = text
+        }
         return TTYResolver.output(
             "/usr/bin/env",
             ["tmux", "send-keys", "-t", pane, keyName]
@@ -97,7 +138,13 @@ struct ActionInjector {
 
     private func injectTerminal(tty: String, key: InjectionKey) -> Bool {
         let target = AppleScriptRunner.stringLiteral("/dev/\(tty)")
-        let keystroke = key == .escape ? "key code 53" : "keystroke \"1\""
+        let keystroke: String
+        switch key {
+        case .escape:
+            keystroke = "key code 53"
+        case let .text(text):
+            keystroke = "keystroke \"\(AppleScriptRunner.stringLiteral(text))\""
+        }
         return appleScript.run("""
         tell application "Terminal"
             repeat with aWindow in windows

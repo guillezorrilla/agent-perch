@@ -99,6 +99,10 @@ struct NotchContentView: View {
                 PlanReviewCard(markdown: markdown) { decision in
                     respond(decision, to: session)
                 }
+            case let .question(prompt):
+                QuestionPromptCard(prompt: prompt) { option in
+                    respond(option, to: prompt, in: session)
+                }
             }
         } else {
             FeaturedSessionCard(session: session) {
@@ -109,6 +113,14 @@ struct NotchContentView: View {
 
     private func respond(_ decision: ActionDecision, to session: AgentSession) {
         if actionInjector.inject(decision, into: session) {
+            actions.collapse()
+        } else {
+            jump(to: session)
+        }
+    }
+
+    private func respond(_ option: Int, to prompt: QuestionPrompt, in session: AgentSession) {
+        if !prompt.multiSelect, actionInjector.inject(String(option), into: session) {
             actions.collapse()
         } else {
             jump(to: session)

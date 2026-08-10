@@ -60,4 +60,87 @@ final class M2bModelTests: XCTestCase {
         XCTAssertEqual(request.diff?.addedCount, 2)
         XCTAssertEqual(request.diff?.removedCount, 0)
     }
+
+    func testAskUserQuestionParsesFirstPromptAndOptionLabels() throws {
+        let action = try XCTUnwrap(PendingAction.parse(
+            toolName: "AskUserQuestion",
+            input: .object([
+                "questions": .array([
+                    .object([
+                        "question": .string("Which deployment target?"),
+                        "header": .string("Target"),
+                        "multiSelect": .bool(false),
+                        "options": .array([
+                            .object([
+                                "label": .string("Production"),
+                                "description": .string("Deploy to customers")
+                            ]),
+                            .object([
+                                "label": .string("Staging"),
+                                "description": .string("Deploy for testing")
+                            ]),
+                            .object(["label": .string("Local only")])
+                        ])
+                    ])
+                ])
+            ])
+        ))
+
+        guard case let .question(prompt) = action else {
+            return XCTFail("Expected a question prompt")
+        }
+        XCTAssertEqual(prompt.question, "Which deployment target?")
+        XCTAssertEqual(prompt.header, "Target")
+        XCTAssertEqual(prompt.options, ["Production", "Staging", "Local only"])
+        XCTAssertEqual(prompt.descriptions, ["Deploy to customers", "Deploy for testing", nil])
+        XCTAssertFalse(prompt.multiSelect)
+    }
+
+    func testAskUserQuestionCapsOptionsAtNine() throws {
+        let options = (1...12).map { number in
+            JSONValue.object(["label": .string("Option \(number)")])
+        }
+        let action = try XCTUnwrap(PendingAction.parse(
+            toolName: "AskUserQuestion",
+            input: .object([
+                "questions": .array([
+                    .object([
+                        "question": .string("Pick one"),
+                        "multiSelect": .bool(false),
+                        "options": .array(options)
+                    ])
+                ])
+            ])
+        ))
+
+        guard case let .question(prompt) = action else {
+            return XCTFail("Expected a question prompt")
+        }
+        XCTAssertEqual(
+            prompt.options,
+            [
+                "Option 1", "Option 2", "Option 3",
+                "Option 4", "Option 5", "Option 6",
+                "Option 7", "Option 8", "Option 9"
+            ]
+        )
+    }
+
+    func testAskUserQuestionRequiresNonEmptyOptions() {
+        let fields: [String: JSONValue] = [
+            "question": .string("Pick one"),
+            "multiSelect": .bool(false)
+        ]
+        var emptyFields = fields
+        emptyFields["options"] = .array([])
+
+        XCTAssertNil(PendingAction.parse(
+            toolName: "AskUserQuestion",
+            input: .object(["questions": .array([.object(fields)])])
+        ))
+        XCTAssertNil(PendingAction.parse(
+            toolName: "AskUserQuestion",
+            input: .object(["questions": .array([.object(emptyFields)])])
+        ))
+    }
 }

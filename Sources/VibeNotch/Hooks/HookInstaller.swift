@@ -1,7 +1,7 @@
 import Foundation
 
 struct HookInstaller {
-    static let preToolUseMatcher = "Edit|MultiEdit|Write|Bash|NotebookEdit|ExitPlanMode"
+    static let preToolUseMatcher = "Edit|MultiEdit|Write|Bash|NotebookEdit|ExitPlanMode|AskUserQuestion"
     static let eventNames = [
         "SessionStart",
         "UserPromptSubmit",

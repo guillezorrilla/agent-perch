@@ -218,6 +218,73 @@ struct PlanReviewCard: View {
     }
 }
 
+struct QuestionPromptCard: View {
+    let prompt: QuestionPrompt
+    let onSelect: (Int) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 11) {
+            HStack(spacing: 7) {
+                Circle()
+                    .fill(Color.vibeBlue)
+                    .frame(width: 7, height: 7)
+                Text("Claude asks")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Color.vibeGray)
+            }
+
+            Text(prompt.question)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.white)
+
+            ScrollView {
+                VStack(spacing: 6) {
+                    ForEach(prompt.options.indices, id: \.self) { index in
+                        optionButton(at: index)
+                    }
+                }
+            }
+            .frame(maxHeight: 300)
+        }
+        .padding(14)
+        .background(Color.vibeCard, in: RoundedRectangle(cornerRadius: 16))
+        .accessibilityElement(children: .contain)
+    }
+
+    private func optionButton(at index: Int) -> some View {
+        let number = index + 1
+        let label = prompt.options[index]
+        return Button { onSelect(number) } label: {
+            HStack(alignment: .top, spacing: 10) {
+                Text("⌘\(number)")
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundStyle(Color.vibeBlue)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(label)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                    if let description = prompt.descriptions[index], !description.isEmpty {
+                        Text(description)
+                            .font(.system(size: 10))
+                            .foregroundStyle(Color.vibeGray)
+                            .lineLimit(1)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.vibePanel, in: RoundedRectangle(cornerRadius: 9))
+            .contentShape(RoundedRectangle(cornerRadius: 9))
+        }
+        .buttonStyle(.plain)
+        .keyboardShortcut(KeyEquivalent(Character(String(number))), modifiers: .command)
+        .accessibilityLabel("Option \(number): \(label)")
+    }
+}
+
 private struct DiffPreviewView: View {
     let diff: DiffPreview
 

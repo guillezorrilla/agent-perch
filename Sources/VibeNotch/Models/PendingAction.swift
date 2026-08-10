@@ -44,12 +44,41 @@ struct PermissionRequest: Equatable, Sendable {
     let diff: DiffPreview?
 }
 
+struct QuestionPrompt: Equatable, Sendable {
+    let question: String
+    let header: String?
+    let options: [String]
+    let descriptions: [String?]
+    let multiSelect: Bool
+}
+
 enum PendingAction: Equatable, Sendable {
     case permission(PermissionRequest)
     case plan(String)
+    case question(QuestionPrompt)
 
     static func parse(toolName: String?, input: JSONValue?) -> PendingAction? {
         guard let toolName, let input, case let .object(object) = input else { return nil }
+        if toolName == "AskUserQuestion" {
+            guard let fields = object["questions"]?.arrayValue?.first?.objectValue,
+                  let question = fields["question"]?.string,
+                  !question.isEmpty,
+                  let values = fields["options"]?.arrayValue else { return nil }
+            let options = values.prefix(9).compactMap { value -> (label: String, description: String?)? in
+                guard let option = value.objectValue,
+                      let label = option["label"]?.string,
+                      !label.isEmpty else { return nil }
+                return (label, option["description"]?.string)
+            }
+            guard !options.isEmpty else { return nil }
+            return .question(QuestionPrompt(
+                question: question,
+                header: fields["header"]?.string,
+                options: options.map { $0.label },
+                descriptions: options.map { $0.description },
+                multiSelect: fields["multiSelect"] == .bool(true)
+            ))
+        }
         if toolName == "ExitPlanMode" {
             guard let plan = object["plan"]?.string, !plan.isEmpty else { return nil }
             return .plan(plan)
