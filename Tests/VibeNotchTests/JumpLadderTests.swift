@@ -144,8 +144,8 @@ final class JumpLadderTests: XCTestCase {
 
     func testShellAtCwdParsedFromLsofFieldOutput() {
         let listing = "p101\nn/Users/me/other\np202\nn/Users/me/project\np303\nn/tmp\n"
-        XCTAssertEqual(TTYResolver.firstPid(withCwd: "/Users/me/project", inLsofFieldOutput: listing), 202)
-        XCTAssertNil(TTYResolver.firstPid(withCwd: "/nope", inLsofFieldOutput: listing))
+        XCTAssertEqual(TTYResolver.pids(withCwd: "/Users/me/project", inLsofFieldOutput: listing), [202])
+        XCTAssertEqual(TTYResolver.pids(withCwd: "/nope", inLsofFieldOutput: listing), [])
     }
 }
 

@@ -257,18 +257,9 @@ enum CodexLiveness {
     static func hasLiveProcess(sessionId: String, cwd: String, processes: [ClaudeProcess]) -> Bool {
         processes.contains {
             TTYResolver.isCodexCLI(command: $0.command)
-                && $0.cwd == cwd
-                && !namesADifferentSession(sessionId: sessionId, command: $0.command)
+                && CanonicalPath.equal($0.cwd, cwd)
+                && !JumpTarget.namesAnotherSession(sessionId: sessionId, command: $0.command)
         }
-    }
-
-    private static func namesADifferentSession(sessionId: String, command: String) -> Bool {
-        guard let range = command.range(of: "resume ") else { return false }
-        let token = command[range.upperBound...]
-            .trimmingCharacters(in: .whitespaces)
-            .split(separator: " ")
-            .first.map(String.init) ?? ""
-        return !token.isEmpty && token != sessionId
     }
 }
 

@@ -37,7 +37,10 @@ struct NotchContentView: View {
                     }
 
                     ForEach(layout.compactRows) { session in
-                        CompactSessionRow(session: session) {
+                        CompactSessionRow(
+                            session: session,
+                            isJumping: store.isJumping(session.sessionId)
+                        ) {
                             jump(to: session)
                         }
                     }
@@ -117,7 +120,10 @@ struct NotchContentView: View {
                 pendingCard(pending, for: session)
             }
         } else {
-            FeaturedSessionCard(session: session) {
+            FeaturedSessionCard(
+                session: session,
+                isJumping: store.isJumping(session.sessionId)
+            ) {
                 jump(to: session)
             }
         }
@@ -203,8 +209,17 @@ struct NotchContentView: View {
         }
     }
 
+    /// The click is acknowledged before the work starts — finding the session's terminal can take
+    /// a moment, and the card says so while it happens — and the panel only closes once the jump
+    /// has actually landed.
     private func jump(to session: AgentSession) {
-        if jumper.jump(session) { actions.collapse() }
+        let store = store
+        let jumper = jumper
+        let actions = actions
+        Task { @MainActor in
+            let jumped = await store.performJump(session) { await jumper.jump($0) }
+            if jumped { actions.collapse() }
+        }
     }
 }
 

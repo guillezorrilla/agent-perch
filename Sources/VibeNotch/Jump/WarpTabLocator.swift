@@ -19,8 +19,14 @@ struct WarpTabLocator {
         self.now = now
     }
 
-    func tabIndex(forCwd cwd: String) -> Int? {
-        guard let copiedDatabaseURL = workingCopy() else { return nil }
+    /// - Parameter reusingRecentCopy: whether a copy taken within `reuseWindow` is good enough.
+    ///   The answer injection that follows a jump wants the reuse (same tab, seconds apart); a
+    ///   jump itself does not — a tab opened since that copy was taken would be missing from it
+    ///   entirely, and landing on a stale index is exactly the wrong-tab bug (#23).
+    func tabIndex(forCwd cwd: String, reusingRecentCopy: Bool = true) -> Int? {
+        guard let copiedDatabaseURL = workingCopy(reusingRecentCopy: reusingRecentCopy) else {
+            return nil
+        }
 
         var database: OpaquePointer?
         let flags = SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX
@@ -38,11 +44,12 @@ struct WarpTabLocator {
     /// another process is writing, so it is copied first — but the copy is what reaches into the
     /// TCC-gated group container, so it is made at most once per `reuseWindow` and never again
     /// once macOS has refused (#20).
-    private func workingCopy() -> URL? {
+    private func workingCopy(reusingRecentCopy: Bool) -> URL? {
         guard !cache.isDenied(databaseURL) else { return nil }
 
         let fileManager = FileManager.default
-        if let reusable = cache.reusableCopy(for: databaseURL, now: now(), within: reuseWindow),
+        if reusingRecentCopy,
+           let reusable = cache.reusableCopy(for: databaseURL, now: now(), within: reuseWindow),
            fileManager.fileExists(atPath: reusable.path) {
             return reusable
         }

@@ -207,6 +207,34 @@ final class WarpDatabaseAccessCacheTests: XCTestCase {
         XCTAssertEqual(locator.tabIndex(forCwd: "/repo"), 2)
     }
 
+    /// A jump asks for the index fresh: a tab opened since the last copy was taken is not in that
+    /// copy at all, so reusing it focuses a stale index — the wrong-tab half of #23. The refusal
+    /// gate is still the first thing checked, so this can never re-prompt.
+    func testAJumpReadsPastTheReuseWindowButNeverPastADenial() throws {
+        let directory = try makeTemporaryDirectory()
+        let databaseURL = directory.appendingPathComponent("warp.sqlite")
+        try makeFixtureDatabase(at: databaseURL, tabs: ["/repo"])
+
+        let clock = Date(timeIntervalSinceReferenceDate: 0)
+        let cache = WarpDatabaseAccessCache()
+        let locator = WarpTabLocator(
+            databaseURL: databaseURL,
+            cache: cache,
+            reuseWindow: 5,
+            now: { clock }
+        )
+
+        XCTAssertEqual(locator.tabIndex(forCwd: "/repo"), 1)
+
+        // A new tab appears in front of it, well inside the reuse window.
+        try makeFixtureDatabase(at: databaseURL, tabs: ["/other", "/repo"])
+        XCTAssertEqual(locator.tabIndex(forCwd: "/repo"), 1)
+        XCTAssertEqual(locator.tabIndex(forCwd: "/repo", reusingRecentCopy: false), 2)
+
+        cache.markDenied(databaseURL)
+        XCTAssertNil(locator.tabIndex(forCwd: "/repo", reusingRecentCopy: false))
+    }
+
     func testCacheIsKeyedPerDatabaseSoOneDenialDoesNotBlockAnother() throws {
         let directory = try makeTemporaryDirectory()
         let missingURL = directory.appendingPathComponent("missing.sqlite")

@@ -60,7 +60,7 @@ final class SessionNotifier: NSObject, UNUserNotificationCenterDelegate {
             }
             NSApp.activate(ignoringOtherApps: true)
             if let session = sessionProvider(sessionID) {
-                jumper.jump(session)
+                await jumper.jump(session)
             }
             completionHandler()
         }
