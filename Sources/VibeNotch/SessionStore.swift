@@ -13,6 +13,11 @@ final class SessionStore: ObservableObject {
     /// card's own `@State` because DynamicNotchKit tears the panel down and rebuilds it on every
     /// expand (DynamicNotch.swift:352) — view state would be gone before the user read it.
     @Published private(set) var resolutions: [String: ActionResolution] = [:]
+    /// Sessions whose jump is still in flight. Resolving where a session lives takes a moment
+    /// even now that it happens off the main actor, and a card that does nothing for that moment
+    /// reads as a click that missed. Lives here for the same reason `resolutions` does: the panel
+    /// is torn down and rebuilt on every expand, so view state would not survive it.
+    @Published private(set) var jumpingSessions: Set<String> = []
     var onTransition: ((SessionTransition) -> Void)?
     /// Fired when an answered card's confirmation has been on screen for its hold and the card is
     /// dropped — the panel close the answer implied, deferred until the feedback actually landed.
@@ -36,7 +41,7 @@ final class SessionStore: ObservableObject {
         codexHome: URL = CodexSessionSource.defaultCodexHome(),
         sources: [AgentSessionSource]? = nil,
         fileManager: FileManager = .default,
-        processProvider: @escaping () -> [ClaudeProcess] = { TTYResolver().processes() },
+        processProvider: @escaping () -> [ClaudeProcess] = { ProcessTableCache.shared.processes() },
         terminalResolver: TerminalNameResolver = TerminalNameResolver()
     ) {
         self.projectsDirectory = projectsDirectory
@@ -45,7 +50,9 @@ final class SessionStore: ObservableObject {
             ClaudeSessionSource(projectsDirectory: projectsDirectory, fileManager: fileManager),
             // Shares this same process listing rather than defaulting to its own — one
             // `pgrep`/`lsof` pass per refresh covers both liveness here and jump-rung/terminal
-            // pill resolution below, and keeps them looking at a consistent process snapshot.
+            // pill resolution below, and keeps them looking at a consistent process snapshot —
+            // now literally so: the default provider is a shared, briefly-cached snapshot that a
+            // click reuses instead of rescanning (#23).
             CodexSessionSource(codexHome: codexHome, fileManager: fileManager, processProvider: processProvider)
         ]
         self.processProvider = processProvider
@@ -88,6 +95,10 @@ final class SessionStore: ObservableObject {
             state.tty = event.tty.hasPrefix("/dev/") ? String(event.tty.dropFirst(5)) : event.tty
         }
 
+        // Whether this event is a fresh request for the user, which is the only kind of event
+        // allowed to cut an answered card's confirmation short below.
+        var startsANewRequest = false
+
         switch event.event {
         case "SessionStart":
             state.status = .working
@@ -109,9 +120,28 @@ final class SessionStore: ObservableObject {
             state.pendingToolInput = event.toolInput
             state.notificationMessage = nil
         case "Notification":
-            state.status = .needsAction
-            state.currentActivity = nil
-            state.notificationMessage = event.message
+            // The same hook fires for "Claude needs your permission to use Bash" and for the ~60s
+            // "Claude is waiting for your input" nudge. Only the first is a request; treating the
+            // second as one is what made every idle session go amber under auto/bypass permission
+            // mode, where the agent never asks for anything at all (#25).
+            switch NotificationOutcome.of(
+                message: event.message,
+                currentStatus: state.status,
+                pendingToolName: state.pendingToolName,
+                pendingToolInput: state.pendingToolInput
+            ) {
+            case .needsAction:
+                state.status = .needsAction
+                state.currentActivity = nil
+                state.notificationMessage = event.message
+                startsANewRequest = true
+            case .finished:
+                state.status = .done
+                state.currentActivity = nil
+                state.notificationMessage = nil
+            case .ignored:
+                return nil
+            }
         case "Stop":
             state.status = .done
             state.currentActivity = nil
@@ -130,11 +160,14 @@ final class SessionStore: ObservableObject {
 
         // The agent moved on, so a "couldn't answer" banner about a request that no longer exists
         // is stale. An `.answered` confirmation is left alone by everything EXCEPT a fresh
-        // notification: its hold owns it, so the user still sees the feedback when the next tool
-        // call lands milliseconds later — but a new notification means something new is waiting,
-        // and holding a stale "Approved ✓" over it would swallow that request.
-        switch (resolutions[sessionID], event.event) {
-        case (.some(.failed), _), (.some(.answered), "Notification"):
+        // request: its hold owns it, so the user still sees the feedback when the next tool call
+        // lands milliseconds later — but a new request means something new is waiting, and
+        // holding a stale "Approved ✓" over it would swallow it. An idle nudge is not a new
+        // request and must not cut the confirmation short (#25).
+        switch resolutions[sessionID] {
+        case .some(.failed):
+            clearResolution(sessionID)
+        case .some(.answered) where startsANewRequest:
             clearResolution(sessionID)
         default:
             break
@@ -203,6 +236,24 @@ final class SessionStore: ObservableObject {
         resolutions[sessionID] = .failed
     }
 
+    func isJumping(_ sessionID: String) -> Bool { jumpingSessions.contains(sessionID) }
+
+    /// Runs a jump with its card marked as jumping for exactly as long as it takes, cleared on
+    /// success and on failure alike. The lifecycle lives here rather than in the view so that no
+    /// path can leave a card spinning forever, and so a panel rebuilt mid-jump still shows it.
+    ///
+    /// A second click while one is in flight is ignored rather than queued: the first is already
+    /// doing the work, and jumping twice would fight over which window ends up in front.
+    @discardableResult
+    func performJump(
+        _ session: AgentSession,
+        using jump: @MainActor (AgentSession) async -> Bool
+    ) async -> Bool {
+        guard jumpingSessions.insert(session.sessionId).inserted else { return false }
+        defer { jumpingSessions.remove(session.sessionId) }
+        return await jump(session)
+    }
+
     /// The user acted on a card we couldn't answer for them (jumped to the terminal to do it by
     /// hand) — the banner has served its purpose.
     func clearResolution(_ sessionID: String) {
@@ -250,16 +301,17 @@ final class SessionStore: ObservableObject {
             let cwd = discovered?.cwd ?? hook?.cwd ?? ""
             let modifiedAt = hookWins ? hook!.updatedAt : discovered!.lastActivity
             let tty = hook?.tty
-            let process = processes.first {
-                if let tty { return $0.tty == tty || $0.tty == "/dev/\(tty)" }
-                return $0.cwd == cwd
-            }
-            let jumpRung = Jumper.rung(
-                for: cwd,
-                preferredTTY: tty,
+            // One answer to "which process is this session", shared by the jump rung and the
+            // terminal pill: the session's own tty first, then a process that names the session,
+            // and only then anything that merely shares the cwd (#23).
+            let target = JumpTarget.resolve(
                 agentName: agentName,
+                sessionId: sessionID,
+                tty: tty,
+                cwd: cwd,
                 processes: processes
             )
+            let jumpRung = Jumper.rung(for: target)
 
             return AgentSession(
                 sessionId: sessionID,
@@ -275,7 +327,7 @@ final class SessionStore: ObservableObject {
                 ),
                 lastPrompt: hook?.lastPrompt,
                 tty: tty,
-                terminalName: process.map { terminalResolver.terminalName(for: $0.pid) } ?? nil,
+                terminalName: target.pid.flatMap { terminalResolver.terminalName(for: $0) },
                 currentActivity: hookWins ? hook?.currentActivity : nil,
                 notificationMessage: hook?.notificationMessage,
                 pendingToolName: hook?.pendingToolName,

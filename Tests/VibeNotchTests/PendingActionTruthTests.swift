@@ -126,7 +126,9 @@ final class PendingActionStoreTests: XCTestCase {
         }
     }
 
-    /// The reported bug: a grep Claude auto-approved, followed by an unrelated idle nudge.
+    /// The reported bug: a grep Claude auto-approved, followed by an unrelated idle nudge. The
+    /// nudge shows no card (#22) and, since #25, does not mark the session needs-action either —
+    /// nothing is blocked, the turn is simply over.
     @MainActor
     func testIdleNotificationAfterAnAutoApprovedToolShowsNoPermissionCard() throws {
         let store = makeStore()
@@ -139,7 +141,7 @@ final class PendingActionStoreTests: XCTestCase {
             fields: #", "message":"Claude is waiting for your input""#
         )
 
-        XCTAssertEqual(store.sessions.first?.status, .needsAction)
+        XCTAssertEqual(store.sessions.first?.status, .done)
         XCTAssertEqual(store.sessions.first?.pendingToolName, "Bash")
         XCTAssertNil(store.sessions.first?.pendingAction)
         XCTAssertFalse(store.hasUnresolvedPendingAction)

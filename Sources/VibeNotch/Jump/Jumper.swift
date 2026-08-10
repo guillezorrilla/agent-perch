@@ -1,4 +1,5 @@
 import AppKit
+import os
 
 enum JumpRung: Equatable, Sendable {
     case exactFocus(tty: String)
@@ -10,12 +11,30 @@ enum JumpRung: Equatable, Sendable {
     }
 }
 
-final class Jumper {
+/// Two halves: work out where the session lives (slow, off the main actor), then focus it (fast,
+/// necessarily on the main actor — AppleScript and `CGEvent` posting are main-thread APIs).
+///
+/// `@unchecked Sendable` because that split is the invariant: `resolver`, `terminalResolver` and
+/// `warpTabLocator` are touched only from `discoveryQueue`, `appleScript` and `warpFocuser` only
+/// from the main actor, and `processes` is thread-safe in its own right.
+final class Jumper: @unchecked Sendable {
     private let resolver = TTYResolver()
     private let terminalResolver = TerminalNameResolver()
     private let appleScript = AppleScriptRunner()
     private let warpTabLocator = WarpTabLocator()
     private let warpFocuser = WarpFocuser()
+    private let processes: ProcessTableCache
+    /// Serial: two rapid clicks resolve one after the other rather than scanning on top of each
+    /// other, which also keeps `terminalResolver`'s ancestry cache single-threaded.
+    private let discoveryQueue = DispatchQueue(
+        label: "dev.vibenotch.jump.discovery",
+        qos: .userInitiated
+    )
+    private static let log = Logger(subsystem: "dev.vibenotch", category: "jump")
+
+    init(processes: ProcessTableCache = .shared) {
+        self.processes = processes
+    }
 
     // Only iTerm2 and Terminal.app expose per-tab tty for exact focus. Warp uses its
     // state database below; anything else can only be reopened at the cwd.
@@ -45,13 +64,17 @@ final class Jumper {
         agentName: String = "Claude",
         processes: [ClaudeProcess]
     ) -> JumpRung {
-        if let preferredTTY, !preferredTTY.isEmpty, preferredTTY != "??" {
-            return .exactFocus(tty: preferredTTY)
-        }
-        if let tty = TTYResolver.tty(for: cwd, agentName: agentName, in: processes) {
-            return .exactFocus(tty: tty)
-        }
-        return .newTab
+        rung(for: JumpTarget.resolve(
+            agentName: agentName,
+            sessionId: "",
+            tty: preferredTTY,
+            cwd: cwd,
+            processes: processes
+        ))
+    }
+
+    static func rung(for target: JumpTarget) -> JumpRung {
+        target.tty.map { JumpRung.exactFocus(tty: $0) } ?? .newTab
     }
 
     /// `codex resume <id>` — Codex's reopen command when no live process is found for the
@@ -73,37 +96,92 @@ final class Jumper {
 
     @MainActor
     @discardableResult
-    func jump(_ session: AgentSession) -> Bool {
-        let processes = resolver.processes()
-        let match = processes.first {
-            TTYResolver.isAgentCLI(session.agentName, command: $0.command)
-                && $0.cwd == session.cwd
-                && $0.tty?.isEmpty == false
-                && $0.tty != "??"
+    func jump(_ session: AgentSession) async -> Bool {
+        perform(await plan(for: session))
+    }
+
+    /// Everything a jump has to find out — the process table, the terminal's identity, Warp's tab
+    /// index — resolved off the main actor. This used to run inline on a click, `lsof` by `lsof`,
+    /// with the UI frozen for the duration (#23).
+    private func plan(for session: AgentSession) async -> JumpPlan {
+        await withCheckedContinuation { continuation in
+            discoveryQueue.async {
+                continuation.resume(returning: self.resolvePlan(for: session))
+            }
         }
-        // Prefer the terminal the session actually runs in: hook-provided name, else
-        // resolve it by walking the live agent process's ancestry.
+    }
+
+    private func resolvePlan(for session: AgentSession) -> JumpPlan {
+        let table = processes.processes()
+        let target = JumpTarget.resolve(session: session, processes: table)
+        if target.isAmbiguous {
+            // Deterministic, but still a guess between real alternatives — say so rather than
+            // let a wrong tab look like a bug with no explanation (#23).
+            let message = """
+                \(session.sessionId) at \(session.cwd): \(target.candidates.count) agent \
+                processes \(target.candidates) share this cwd and none names the session; \
+                chose pid \(target.pid ?? -1)
+                """
+            Self.log.debug("ambiguous jump target — \(message, privacy: .public)")
+        }
+
+        // Prefer the terminal the session actually runs in: hook-provided name, else resolve it
+        // by walking the identified agent process's ancestry.
         let terminal = (session.terminalName
-            ?? match.flatMap { terminalResolver.terminalName(for: $0.pid) })?.lowercased()
+            ?? target.pid.flatMap { terminalResolver.terminalName(for: $0) })?.lowercased()
 
         if terminal == "warp" {
-            return Self.routeWarpJump(
+            // Re-read the tab index NOW rather than reusing a copy of Warp's database from a few
+            // seconds ago: a tab opened since that copy was taken is not in it at all, and the
+            // jump would land on a stale index or fall through to a duplicate tab (#23). A
+            // refusal by the container is still remembered for the launch, so this never
+            // re-prompts.
+            guard let index = warpTabLocator.tabIndex(forCwd: session.cwd, reusingRecentCopy: false) else {
+                return .newTab(cwd: session.cwd, terminal: terminal, resumeCommand: session.resumeCommand)
+            }
+            return JumpPlan(
+                target: .warpTab(index),
                 cwd: session.cwd,
-                locate: { warpTabLocator.tabIndex(forCwd: $0) },
-                focus: { warpFocuser.focus(tabIndex: $0) },
-                fallback: { openNewTab(at: session.cwd, preferring: terminal, resumeCommand: session.resumeCommand) }
+                terminal: terminal,
+                resumeCommand: session.resumeCommand
             )
         }
 
-        // Hook tty, else live agent tty, else any shell still sitting at the cwd —
-        // the user's open tab after the agent exited (#10).
-        let tty = (session.tty?.isEmpty == false ? session.tty : nil)
-            ?? match?.tty
-            ?? resolver.shellTTY(at: session.cwd)
-        if let tty, tty != "??", Self.canExactFocus(terminal), focus(tty: tty) {
-            return true
+        // The session's own tty, else the tty of the process identified for it, else any shell
+        // still sitting at the cwd — the user's open tab after the agent exited (#10). That last
+        // one is the most expensive call we make and only iTerm/Terminal can use its answer, so
+        // it is never made for a terminal that cannot be focused by tty.
+        let tty = target.tty ?? (Self.canExactFocus(terminal) ? resolver.shellTTY(at: session.cwd) : nil)
+        guard let tty, Self.canExactFocus(terminal) else {
+            return .newTab(cwd: session.cwd, terminal: terminal, resumeCommand: session.resumeCommand)
         }
-        return openNewTab(at: session.cwd, preferring: terminal, resumeCommand: session.resumeCommand)
+        return JumpPlan(
+            target: .focusTTY(tty),
+            cwd: session.cwd,
+            terminal: terminal,
+            resumeCommand: session.resumeCommand
+        )
+    }
+
+    /// The main-actor half: one AppleScript or one keystroke, with the same fallback to a new tab
+    /// the ladder always had when the tab it was told about turns out not to be there.
+    @MainActor
+    private func perform(_ plan: JumpPlan) -> Bool {
+        switch plan.target {
+        case let .focusTTY(tty):
+            if focus(tty: tty) { return true }
+        case let .warpTab(index):
+            return Self.routeWarpJump(
+                cwd: plan.cwd,
+                // Already located off the main actor, moments ago.
+                locate: { _ in index },
+                focus: { warpFocuser.focus(tabIndex: $0) },
+                fallback: { openNewTab(at: plan.cwd, preferring: plan.terminal, resumeCommand: plan.resumeCommand) }
+            )
+        case .newTab:
+            break
+        }
+        return openNewTab(at: plan.cwd, preferring: plan.terminal, resumeCommand: plan.resumeCommand)
     }
 
     @MainActor

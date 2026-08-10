@@ -5,6 +5,10 @@ import SwiftUI
 /// the name predates that and is kept only because it's a one-word answer to "which card".
 struct FeaturedSessionCard: View {
     let session: AgentSession
+    /// A jump this card started is still resolving. Comes from `SessionStore`, never from view
+    /// state: the panel is rebuilt on every expand, and a spinner that vanished on the rebuild
+    /// would leave the click looking like it did nothing.
+    var isJumping = false
     let onClick: () -> Void
 
     var body: some View {
@@ -34,16 +38,21 @@ struct FeaturedSessionCard: View {
                 Spacer(minLength: 10)
 
                 VStack(alignment: .trailing, spacing: 8) {
-                    SessionPills(agentName: session.agentName, terminalName: session.terminalName)
+                    if isJumping {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        SessionPills(agentName: session.agentName, terminalName: session.terminalName)
+                    }
                     ElapsedText(since: session.modifiedAt)
                 }
             }
             .padding(14)
             .background(Color.vibeCard, in: RoundedRectangle(cornerRadius: 16))
             .contentShape(RoundedRectangle(cornerRadius: 16))
+            .opacity(isJumping ? 0.6 : 1)
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(session.title), \(statusLabel)")
+        .accessibilityLabel("\(session.title), \(isJumping ? "jumping" : statusLabel)")
         .accessibilityHint("Jump to terminal")
         .firstMouseAction(onClick)
     }
@@ -106,12 +115,18 @@ struct FeaturedSessionCard: View {
 
 struct CompactSessionRow: View {
     let session: AgentSession
+    /// See `FeaturedSessionCard.isJumping` — same flag, same store-owned reason.
+    var isJumping = false
     let onClick: () -> Void
 
     var body: some View {
         Button(action: onClick) {
             HStack(spacing: 9) {
-                SessionStatusDot(status: session.status, size: 7)
+                if isJumping {
+                    ProgressView().controlSize(.mini)
+                } else {
+                    SessionStatusDot(status: session.status, size: 7)
+                }
                 Text(session.title)
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(.white)
@@ -124,9 +139,10 @@ struct CompactSessionRow: View {
             .frame(minHeight: 36)
             .background(Color.vibeCard.opacity(0.72), in: RoundedRectangle(cornerRadius: 11))
             .contentShape(RoundedRectangle(cornerRadius: 11))
+            .opacity(isJumping ? 0.6 : 1)
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(session.title), open terminal")
+        .accessibilityLabel("\(session.title), \(isJumping ? "jumping" : "open terminal")")
         .firstMouseAction(onClick)
     }
 }

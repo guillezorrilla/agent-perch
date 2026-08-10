@@ -149,14 +149,19 @@ final class SessionTransitionTests: XCTestCase {
             fields: #", "tool_name":"Bash", "tool_input":{"command":"make app"}"#
         )
         XCTAssertEqual(store.sessions.first?.currentActivity, "Running make app")
+        // Permission wording, because only a permission notification marks a session
+        // needs-action now — an idle nudge means the turn is over (#25).
         try send(to: store,
             "Notification",
             timestamp: 101,
-            fields: #", "message":"Approve Bash?""#
+            fields: #", "message":"Claude needs your permission to use Bash""#
         )
         XCTAssertEqual(store.sessions.first?.status, .needsAction)
         XCTAssertNil(store.sessions.first?.currentActivity)
-        XCTAssertEqual(store.sessions.first?.notificationMessage, "Approve Bash?")
+        XCTAssertEqual(
+            store.sessions.first?.notificationMessage,
+            "Claude needs your permission to use Bash"
+        )
         XCTAssertEqual(store.sessions.first?.pendingToolName, "Bash")
         XCTAssertEqual(
             store.sessions.first?.pendingToolInput,
@@ -247,7 +252,7 @@ final class SessionTransitionTests: XCTestCase {
         try send(to: store,
             "Notification",
             timestamp: 100,
-            fields: #", "message":"Needs input""#
+            fields: #", "message":"Claude needs your permission to use Bash""#
         )
 
         XCTAssertEqual(store.sessions.first?.status, .needsAction)

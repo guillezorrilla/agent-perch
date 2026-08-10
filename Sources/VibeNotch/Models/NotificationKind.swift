@@ -46,3 +46,46 @@ enum NotificationKind: Equatable, Sendable {
         return name.isEmpty ? nil : String(name)
     }
 }
+
+/// What a `Notification` hook actually does to the session it belongs to.
+///
+/// Splitting `.permission` from `.waiting` was only half the fix (#22): the store still turned
+/// EVERY notification into `.needsAction`, so with Claude Code in auto/bypass permission mode —
+/// where the agent never asks for approval at all — the ~60s idle nudge went amber, pulsed, rang,
+/// posted a macOS notification and threw the panel open, every time (#25). An idle nudge is not a
+/// request; it is the absence of one.
+enum NotificationOutcome: Equatable, Sendable {
+    /// Something is genuinely blocked on the user: amber, a macOS notification, the panel opens.
+    case needsAction
+    /// An idle nudge with nothing behind it: the turn is simply over.
+    case finished
+    /// Nothing at all happens — no status, no message, not even a timestamp. Either the session
+    /// already finished (an idle nudge must not resurrect it, nor restart the grace period before
+    /// an ended card is dropped), or it is already showing the very request this nudge is about:
+    /// overwriting the recorded message with "waiting for your input" would dissolve the card the
+    /// user is being nudged to answer.
+    case ignored
+
+    static func of(
+        message: String?,
+        currentStatus: SessionStatus,
+        pendingToolName: String?,
+        pendingToolInput: JSONValue?
+    ) -> NotificationOutcome {
+        if case .permission = NotificationKind.classify(message) { return .needsAction }
+
+        // `AskUserQuestion` and `ExitPlanMode` block on the user by definition — the tool call IS
+        // the wait — so the idle wording that accompanies one is the truth about it (#14).
+        switch PendingAction.parse(toolName: pendingToolName, input: pendingToolInput) {
+        case .some(.question), .some(.plan):
+            return .needsAction
+        case .some(.permission), .none:
+            break
+        }
+
+        switch currentStatus {
+        case .done, .ended, .needsAction: return .ignored
+        case .active, .idle, .working: return .finished
+        }
+    }
+}
