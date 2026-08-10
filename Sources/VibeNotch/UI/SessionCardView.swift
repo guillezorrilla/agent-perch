@@ -29,7 +29,7 @@ struct FeaturedSessionCard: View {
                 Spacer(minLength: 10)
 
                 VStack(alignment: .trailing, spacing: 8) {
-                    SessionPills(terminalName: session.terminalName)
+                    SessionPills(agentName: session.agentName, terminalName: session.terminalName)
                     ElapsedText(since: session.modifiedAt)
                 }
             }
@@ -103,7 +103,7 @@ struct CompactSessionRow: View {
                     .foregroundStyle(.white)
                     .lineLimit(1)
                 Spacer(minLength: 8)
-                SessionPills(terminalName: session.terminalName)
+                SessionPills(agentName: session.agentName, terminalName: session.terminalName)
                 ElapsedText(since: session.modifiedAt)
             }
             .padding(.horizontal, 12)
@@ -357,11 +357,12 @@ private struct ActionButtons: View {
 }
 
 private struct SessionPills: View {
+    let agentName: String
     let terminalName: String?
 
     var body: some View {
         HStack(spacing: 4) {
-            pill("Claude")
+            pill(agentName)
             if let terminalName {
                 pill(terminalName)
             }

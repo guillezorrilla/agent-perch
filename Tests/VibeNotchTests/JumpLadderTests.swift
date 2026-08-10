@@ -148,3 +148,78 @@ final class JumpLadderTests: XCTestCase {
         XCTAssertNil(TTYResolver.firstPid(withCwd: "/nope", inLsofFieldOutput: listing))
     }
 }
+
+final class CodexJumpTests: XCTestCase {
+    func testIsCodexCLIMatchesOnlyTheCodexExecutable() {
+        XCTAssertTrue(TTYResolver.isCodexCLI(command: "/usr/local/bin/codex resume abc-123"))
+        XCTAssertTrue(TTYResolver.isCodexCLI(command: "codex"))
+        XCTAssertFalse(TTYResolver.isCodexCLI(command: "/usr/bin/vim codex-notes.md"))
+        XCTAssertFalse(TTYResolver.isCodexCLI(command: "/usr/local/bin/claude"))
+    }
+
+    func testGeneralizedAgentCLICheckDispatchesByAgentName() {
+        XCTAssertTrue(TTYResolver.isAgentCLI("Codex", command: "/usr/local/bin/codex"))
+        XCTAssertFalse(TTYResolver.isAgentCLI("Codex", command: "/usr/local/bin/claude"))
+        XCTAssertTrue(TTYResolver.isAgentCLI("Claude", command: "/usr/local/bin/claude"))
+        XCTAssertFalse(TTYResolver.isAgentCLI("Claude", command: "/usr/local/bin/codex"))
+        // Anything unrecognized defaults to the Claude rules — the same assumption every
+        // call site already made before Codex existed.
+        XCTAssertTrue(TTYResolver.isAgentCLI("SomeFutureAgent", command: "/usr/local/bin/claude"))
+    }
+
+    func testCodexRungPrefersLiveProcessMatchOverNewTab() {
+        let processes = [
+            ClaudeProcess(pid: 40, command: "/usr/local/bin/codex", cwd: "/repo", tty: "ttys005"),
+            ClaudeProcess(pid: 41, command: "/usr/local/bin/claude", cwd: "/repo", tty: "ttys006")
+        ]
+
+        XCTAssertEqual(
+            Jumper.rung(for: "/repo", agentName: "Codex", processes: processes),
+            .exactFocus(tty: "ttys005")
+        )
+        XCTAssertEqual(
+            Jumper.rung(for: "/repo", agentName: "Claude", processes: processes),
+            .exactFocus(tty: "ttys006")
+        )
+    }
+
+    func testCodexRungFallsBackToNewTabWithoutALiveProcess() {
+        XCTAssertEqual(
+            Jumper.rung(for: "/repo", agentName: "Codex", processes: []),
+            .newTab
+        )
+        // A live Claude process at the same cwd must never satisfy a Codex rung.
+        XCTAssertEqual(
+            Jumper.rung(for: "/repo", agentName: "Codex", processes: [
+                ClaudeProcess(pid: 1, command: "/usr/local/bin/claude", cwd: "/repo", tty: "ttys001")
+            ]),
+            .newTab
+        )
+    }
+
+    func testCodexResumeCommandIsShellQuoted() {
+        XCTAssertEqual(
+            Jumper.codexResumeCommand(sessionId: "019fe8a4-1234"),
+            "codex resume '019fe8a4-1234'"
+        )
+    }
+
+    func testNewTabShellCommandUsesCodexResumeWhenProvided() {
+        let resume = Jumper.codexResumeCommand(sessionId: "019fe8a4-1234")
+        let command = Jumper.newTabShellCommand(cwd: "/Users/me/My Repo's", resumeCommand: resume)
+
+        XCTAssertTrue(command.hasPrefix("/bin/zsh -lc '"))
+        XCTAssertTrue(command.contains("cd -- "))
+        XCTAssertTrue(command.contains("My Repo"))
+        XCTAssertTrue(command.contains("codex resume"))
+        XCTAssertTrue(command.contains("019fe8a4-1234"))
+        // Without a resumeCommand, behavior must stay byte-identical to the Claude path.
+        XCTAssertFalse(command.contains("exec"))
+    }
+
+    func testNewTabShellCommandWithoutResumeCommandStillDropsIntoALoginShell() {
+        let command = Jumper.newTabShellCommand(cwd: "/repo")
+        XCTAssertTrue(command.contains("exec"))
+        XCTAssertTrue(command.contains("SHELL:-/bin/zsh"))
+    }
+}
