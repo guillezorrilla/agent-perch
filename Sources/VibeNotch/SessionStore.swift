@@ -43,7 +43,10 @@ final class SessionStore: ObservableObject {
         self.codexHome = codexHome
         self.sources = sources ?? [
             ClaudeSessionSource(projectsDirectory: projectsDirectory, fileManager: fileManager),
-            CodexSessionSource(codexHome: codexHome, fileManager: fileManager)
+            // Shares this same process listing rather than defaulting to its own — one
+            // `pgrep`/`lsof` pass per refresh covers both liveness here and jump-rung/terminal
+            // pill resolution below, and keeps them looking at a consistent process snapshot.
+            CodexSessionSource(codexHome: codexHome, fileManager: fileManager, processProvider: processProvider)
         ]
         self.processProvider = processProvider
         self.terminalResolver = terminalResolver

@@ -206,6 +206,54 @@ final class CodexSessionTitleTests: XCTestCase {
         // One unbroken word has no earlier boundary, so it hard-cuts at 60 plus the ellipsis.
         XCTAssertEqual(SessionTitle.resolveCodex(threadName: long, cwd: "/tmp"), String(repeating: "a", count: 60) + "…")
     }
+
+    // Regression for #24: an agent-spawned Codex thread's name carries a machine-generated
+    // wrapper instead of a real title.
+    func testStripsCodexCompanionTaskWrapperDownToTheTaskText() {
+        XCTAssertEqual(
+            SessionTitle.resolveCodex(
+                threadName: "Codex Companion Task: Fix the login bug Repo: /Users/me/project",
+                cwd: "/Users/me/project"
+            ),
+            "Fix the login bug"
+        )
+    }
+
+    func testStripsCodexCompanionTaskWrapperCaseInsensitively() {
+        XCTAssertEqual(
+            SessionTitle.resolveCodex(
+                threadName: "codex companion task: Fix the login bug repo: /Users/me/project",
+                cwd: "/Users/me/project"
+            ),
+            "Fix the login bug"
+        )
+    }
+
+    func testCodexCompanionTaskWrapperWithNoRepoSuffixKeepsTheTaskText() {
+        XCTAssertEqual(
+            SessionTitle.resolveCodex(threadName: "Codex Companion Task: Fix the login bug", cwd: "/Users/me/project"),
+            "Fix the login bug"
+        )
+    }
+
+    // The brief's literal example: an unfilled "<task>" template placeholder leaves nothing
+    // sensible behind, so this must fall back to the cwd basename rather than showing "<task>".
+    func testCodexCompanionTaskWrapperWithAnUnfilledPlaceholderFallsBackToCwdBasename() {
+        XCTAssertEqual(
+            SessionTitle.resolveCodex(
+                threadName: "Codex Companion Task: <task> Repo: /Users/x/y",
+                cwd: "/Users/x/y"
+            ),
+            "y"
+        )
+    }
+
+    func testNormalThreadNameWithNoWrapperPassesThroughUnchanged() {
+        XCTAssertEqual(
+            SessionTitle.resolveCodex(threadName: "Fix the flaky test", cwd: "/Users/me/project"),
+            "Fix the flaky test"
+        )
+    }
 }
 
 extension SessionTitleTests {

@@ -41,19 +41,45 @@ enum SessionTitle {
     }
 
     /// Codex has no transcript metadata or hook-provided prompt to fall back on — just the
-    /// session index's `thread_name` (when it looks like a real title, not a stored path) and
-    /// the cwd basename.
+    /// session index's `thread_name` (once stripped of any machine-generated wrapper, and only
+    /// when what's left looks like a real title, not a stored path) and the cwd basename.
     static func resolveCodex(threadName: String?, cwd: String) -> String {
-        if let threadName, isUsableThreadName(threadName) {
-            return truncate(threadName, max: 60)
+        if let threadName {
+            let cleaned = stripMachineGeneratedPrefix(from: threadName)
+            if isUsableThreadName(cleaned) {
+                return truncate(cleaned, max: 60)
+            }
         }
         return cwd.hasPrefix("/") ? URL(fileURLWithPath: cwd).lastPathComponent : cwd
+    }
+
+    /// An agent-spawned Codex thread's name is often stamped with a machine-generated wrapper
+    /// instead of a real title, e.g. `"Codex Companion Task: <task> Repo: /Users/x/y"`. Strips
+    /// that wrapper down to just `<task>`, so a real title underneath still gets used; a
+    /// wrapper with nothing usable left over falls through to `isUsableThreadName`'s
+    /// cwd-basename fallback.
+    private static func stripMachineGeneratedPrefix(from value: String) -> String {
+        var value = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let prefixRange = value.range(
+            of: "Codex Companion Task:",
+            options: [.caseInsensitive, .anchored]
+        ) else { return value }
+        value = String(value[prefixRange.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Trailing "Repo: /some/path" boilerplate the wrapper appends after the task text.
+        if let repoRange = value.range(of: "Repo:", options: [.caseInsensitive]) {
+            value = String(value[..<repoRange.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return value
     }
 
     private static func isUsableThreadName(_ value: String) -> Bool {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
-        return !trimmed.hasPrefix("/") && !trimmed.hasPrefix("~/")
+        if trimmed.hasPrefix("/") || trimmed.hasPrefix("~/") { return false }
+        // A leftover template placeholder (e.g. an unfilled "<task>") is not a real title.
+        if trimmed.hasPrefix("<") && trimmed.hasSuffix(">") { return false }
+        return true
     }
 
     /// The "You: …" subtitle text, or nil when there is nothing worth showing — no placeholder

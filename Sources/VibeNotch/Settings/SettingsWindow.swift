@@ -70,6 +70,18 @@ struct SettingsView: View {
                 ))
             }
 
+            Section("Codex") {
+                VStack(alignment: .leading, spacing: 4) {
+                    Toggle("Show sub-agent sessions", isOn: Binding(
+                        get: { settings.showSubAgentSessions },
+                        set: { settings.showSubAgentSessions = $0 }
+                    ))
+                    Text("Also show Codex sessions spawned by another agent or IDE, or by Codex itself — not just the ones you started yourself.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             Section("Claude hooks") {
                 HStack {
                     Circle()
@@ -85,7 +97,7 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .padding(12)
-        .frame(width: 500, height: 430)
+        .frame(width: 500, height: 490)
     }
 }
 
@@ -102,7 +114,7 @@ final class SettingsWindowController {
         settings.refreshHooksInstalled()
         if window == nil {
             let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 500, height: 430),
+                contentRect: NSRect(x: 0, y: 0, width: 500, height: 490),
                 styleMask: [.titled, .closable],
                 backing: .buffered,
                 defer: false
