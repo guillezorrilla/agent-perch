@@ -27,7 +27,7 @@ struct NotchContentView: View {
         Group {
             if let featuredSession {
                 VStack(alignment: .leading, spacing: 10) {
-                    UsageStripView(usage: usageProvider.usage) {
+                    UsageStripView(providers: usageProvider.providers) {
                         Task { await usageProvider.forceRefresh() }
                     }
 
@@ -193,23 +193,23 @@ struct CompactTrailingView: View {
 }
 
 struct UsageStripView: View {
-    let usage: UsageSnapshot?
+    let providers: [ProviderUsage]
     var onRefresh: () -> Void = {}
 
     var body: some View {
-        HStack(spacing: 7) {
-            Text("✦")
-                .foregroundStyle(.white)
-            if let usage {
-                window(label: "5h", value: usage.fiveHour)
-                Text("|")
-                    .foregroundStyle(Color.vibeGray.opacity(0.65))
-                window(label: "7d", value: usage.sevenDay)
-            } else {
-                // No snapshot yet (never fetched / rate-limited) — still offer a refresh.
+        HStack(alignment: .top, spacing: 7) {
+            if providers.isEmpty {
+                // No snapshot yet (never fetched / no credentials / rate-limited) — still offer a refresh.
                 Text("usage unavailable")
                     .foregroundStyle(Color.vibeGray)
+            } else {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(providers, id: \.provider) { provider in
+                        providerRow(provider)
+                    }
+                }
             }
+            Spacer(minLength: 0)
             Button(action: onRefresh) {
                 Image(systemName: "arrow.clockwise")
                     .foregroundStyle(Color.vibeGray)
@@ -218,18 +218,44 @@ struct UsageStripView: View {
             .help("Refresh usage")
         }
         .font(.system(size: 11, weight: .medium, design: .monospaced))
-        .lineLimit(1)
         .padding(.horizontal, 4)
     }
 
     @ViewBuilder
-    private func window(label: String, value: UsageWindow) -> some View {
-        Text(label)
+    private func providerRow(_ usage: ProviderUsage) -> some View {
+        HStack(spacing: 7) {
+            Text(glyph(for: usage.provider))
+                .foregroundStyle(.white)
+            Text(usage.provider)
+                .foregroundStyle(Color.vibeGray)
+                .frame(minWidth: 44, alignment: .leading)
+            ForEach(Array(usage.windows.enumerated()), id: \.offset) { index, window in
+                if index > 0 {
+                    Text("|")
+                        .foregroundStyle(Color.vibeGray.opacity(0.65))
+                }
+                windowView(window)
+            }
+        }
+        .lineLimit(1)
+    }
+
+    @ViewBuilder
+    private func windowView(_ window: UsageWindow) -> some View {
+        Text(window.label)
             .foregroundStyle(Color.vibeGray)
-        Text("\(Int(value.utilization.rounded()))%")
-            .foregroundStyle(color(for: value.level))
-        Text(value.resetText())
+        Text("\(Int(window.utilization.rounded()))%")
+            .foregroundStyle(color(for: window.level))
+        Text(window.resetText())
             .foregroundStyle(Color.vibeGray)
+    }
+
+    private func glyph(for provider: String) -> String {
+        switch provider {
+        case "Claude": "✦"
+        case "Codex": "◆"
+        default: "●"
+        }
     }
 
     private func color(for level: UsageLevel) -> Color {
