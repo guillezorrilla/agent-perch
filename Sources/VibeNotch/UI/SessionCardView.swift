@@ -58,7 +58,10 @@ struct FeaturedSessionCard: View {
     private var statusLine: some View {
         switch session.status {
         case .needsAction:
-            Text("Needs input — click to respond")
+            // This is the card a session gets when it needs input but nothing is blocked on an
+            // Allow/Deny — an idle "Claude is waiting for your input" notification. Clicking it
+            // jumps to the terminal; it never answers anything on the user's behalf.
+            Text("Needs input — click to jump")
                 .foregroundStyle(Color.vibeAmber)
         case .done, .ended:
             Text("Done — click to jump")
@@ -143,17 +146,23 @@ struct PermissionRequestCard: View {
                     .foregroundStyle(Color.vibeGray)
             }
 
-            HStack(alignment: .firstTextBaseline, spacing: 7) {
-                Text("⚠︎")
-                    .foregroundStyle(Color.vibeAmber)
-                Text(request.toolName)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Color.vibeAmber)
-                Text(request.target)
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+            // Both fields are empty when the request could not be tied to a recorded tool call —
+            // the notification message below is then all we honestly know about it.
+            if !request.toolName.isEmpty || !request.target.isEmpty {
+                HStack(alignment: .firstTextBaseline, spacing: 7) {
+                    Text("⚠︎")
+                        .foregroundStyle(Color.vibeAmber)
+                    if !request.toolName.isEmpty {
+                        Text(request.toolName)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Color.vibeAmber)
+                    }
+                    Text(request.target)
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
             }
 
             if let diff = request.diff {
@@ -296,6 +305,51 @@ struct QuestionPromptCard: View {
         .keyboardShortcut(KeyEquivalent(Character(String(number))), modifiers: .command)
         .accessibilityLabel("Option \(number): \(label)")
         .firstMouseAction { onSelect(number) }
+    }
+}
+
+/// What an answered card turns into: the decision that was made, held on screen long enough to
+/// be read, with no buttons left to press twice. Its `resolution` comes from `SessionStore`, not
+/// from view state — DynamicNotchKit rebuilds this panel on every expand, so a local flag would
+/// be gone before the user saw it.
+struct ResolvedActionCard: View {
+    let resolution: ActionResolution
+    /// Only the failure state is clickable; there is nothing left to do about a successful one.
+    let onJump: () -> Void
+
+    var body: some View {
+        switch resolution {
+        case let .answered(label):
+            row(dot: .vibeGreen, text: label)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel(label)
+        case .failed:
+            Button(action: onJump) {
+                row(dot: .vibeAmber, text: "Couldn't answer — click to jump")
+                    .contentShape(RoundedRectangle(cornerRadius: 16))
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Couldn't answer")
+            .accessibilityHint("Jump to terminal")
+            .firstMouseAction(onJump)
+        }
+    }
+
+    private func row(dot: Color, text: String) -> some View {
+        HStack(spacing: 9) {
+            Circle()
+                .fill(dot)
+                .frame(width: 7, height: 7)
+            Text(text)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer(minLength: 0)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.vibeCard, in: RoundedRectangle(cornerRadius: 16))
     }
 }
 

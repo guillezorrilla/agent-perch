@@ -52,10 +52,67 @@ struct QuestionPrompt: Equatable, Sendable {
     let multiSelect: Bool
 }
 
+/// What an answered card shows in place of its buttons, for the ~1s it stays on screen.
+enum ActionResolution: Equatable, Sendable {
+    /// The answer went into the terminal. The label is what the user chose ("Approved ✓").
+    case answered(String)
+    /// Injection refused (unsupported terminal, Accessibility not granted, tab not found), so
+    /// nothing was typed anywhere and the user still has to answer by hand.
+    case failed
+}
+
 enum PendingAction: Equatable, Sendable {
     case permission(PermissionRequest)
     case plan(String)
     case question(QuestionPrompt)
+
+    /// The single answer to "is this session really waiting on the user, and for what".
+    ///
+    /// `PreToolUse` fires for EVERY matching tool call, auto-approved ones included, so a recorded
+    /// tool input is no evidence that anything is waiting. The `Notification` payload is: it fires
+    /// both for genuine permission requests and for plain idle nudges, and only its message says
+    /// which. Pairing an idle notification with the last, already-approved tool call is what used
+    /// to fabricate "Permission Request — Bash grep -n …" cards for greps nobody was asked about,
+    /// whose Allow button typed a "1" at a prompt that was not waiting for one.
+    ///
+    /// - Returns: the card to show, or `nil` for "no answerable card" — a needs-input session with
+    ///   nothing blocked falls back to its normal card body.
+    static func resolve(
+        status: SessionStatus,
+        notificationMessage: String?,
+        toolName: String?,
+        toolInput: JSONValue?
+    ) -> PendingAction? {
+        guard status == .needsAction else { return nil }
+        let recorded = parse(toolName: toolName, input: toolInput)
+        switch recorded {
+        // A question or a plan IS the thing being waited on: `AskUserQuestion`/`ExitPlanMode`
+        // block on the user by definition, so the tool call corroborates itself and needs no
+        // notification to back it up.
+        case .some(.question), .some(.plan):
+            return recorded
+        case .some(.permission), .none:
+            break
+        }
+
+        guard let notificationMessage,
+              case let .permission(tool) = NotificationKind.classify(notificationMessage) else {
+            return nil
+        }
+        if let tool,
+           case let .some(.permission(request)) = recorded,
+           request.toolName.lowercased() == tool.lowercased() {
+            return recorded
+        }
+        // The recorded call belongs to some other tool (or the message named none, or nothing was
+        // recorded at all): show the request, but never someone else's diff or command.
+        return .permission(PermissionRequest(
+            toolName: tool ?? "",
+            target: "",
+            details: notificationMessage,
+            diff: nil
+        ))
+    }
 
     static func parse(toolName: String?, input: JSONValue?) -> PendingAction? {
         guard let toolName, let input, case let .object(object) = input else { return nil }

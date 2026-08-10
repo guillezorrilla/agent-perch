@@ -37,6 +37,17 @@ struct AgentSession: Identifiable, Equatable, Sendable {
 
     var id: String { sessionId }
 
+    /// The permission/plan/question card this session should show, or `nil` when nothing is
+    /// actually blocked on the user — see `PendingAction.resolve`.
+    var pendingAction: PendingAction? {
+        PendingAction.resolve(
+            status: status,
+            notificationMessage: notificationMessage,
+            toolName: pendingToolName,
+            toolInput: pendingToolInput
+        )
+    }
+
     var folderName: String {
         cwd.hasPrefix("/") ? URL(fileURLWithPath: cwd).lastPathComponent : cwd
     }
