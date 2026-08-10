@@ -17,6 +17,21 @@ struct SettingsView: View {
                 }
                 .pickerStyle(.segmented)
 
+                VStack(alignment: .leading, spacing: 4) {
+                    Picker("Show on", selection: Binding(
+                        get: { settings.screenChoice },
+                        set: { settings.screenChoice = $0 }
+                    )) {
+                        ForEach(ScreenChoice.allCases) { choice in
+                            Text(choice.label).tag(choice)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    Text(settings.screenChoice.help)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
                 HStack {
                     Text("Panel width")
                     Slider(
@@ -70,7 +85,7 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .padding(12)
-        .frame(width: 500, height: 390)
+        .frame(width: 500, height: 430)
     }
 }
 
@@ -87,7 +102,7 @@ final class SettingsWindowController {
         settings.refreshHooksInstalled()
         if window == nil {
             let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 500, height: 390),
+                contentRect: NSRect(x: 0, y: 0, width: 500, height: 430),
                 styleMask: [.titled, .closable],
                 backing: .buffered,
                 defer: false

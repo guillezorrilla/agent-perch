@@ -65,6 +65,85 @@ final class NotchHoverTests: XCTestCase {
         XCTAssertEqual(ScreenInfo.selected(from: [external])?.id, 1)
     }
 
+    // MARK: - ScreenChoice
+
+    func testSelectedReturnsNilForEmptyArray() {
+        for choice in ScreenChoice.allCases {
+            XCTAssertNil(ScreenInfo.selected(from: [], choice: choice))
+        }
+    }
+
+    func testActiveDisplayPicksMainEvenWhenANotchScreenExists() {
+        // The user is focused on the external display; the MacBook (with the physical notch)
+        // is not the one they're looking at, so `.activeDisplay` must not steal it back.
+        let external = ScreenInfo(id: 1, frame: screenFrame, hasNotch: false, isMain: true)
+        let macBook = ScreenInfo(id: 2, frame: screenFrame, hasNotch: true, isMain: false)
+
+        XCTAssertEqual(ScreenInfo.selected(from: [external, macBook], choice: .activeDisplay)?.id, 1)
+        XCTAssertEqual(ScreenInfo.selected(from: [macBook, external], choice: .activeDisplay)?.id, 1)
+    }
+
+    func testNotchDisplayPicksTheNotchScreenEvenWhenMainIsExternal() {
+        let external = ScreenInfo(id: 1, frame: screenFrame, hasNotch: false, isMain: true)
+        let macBook = ScreenInfo(id: 2, frame: screenFrame, hasNotch: true, isMain: false)
+
+        XCTAssertEqual(ScreenInfo.selected(from: [external, macBook], choice: .notchDisplay)?.id, 2)
+    }
+
+    func testPrimaryDisplayPicksTheOriginZeroScreen() {
+        let secondary = ScreenInfo(id: 1, frame: NSRect(x: 1_512, y: 0, width: 1_920, height: 1_080), hasNotch: false, isMain: true, isPrimary: false)
+        let primary = ScreenInfo(id: 2, frame: NSRect(x: 0, y: 0, width: 1_512, height: 982), hasNotch: true, isMain: false, isPrimary: true)
+
+        XCTAssertEqual(ScreenInfo.selected(from: [secondary, primary], choice: .primaryDisplay)?.id, 2)
+    }
+
+    func testMacBookOnlyPicksTheOnlyScreenForEveryChoice() {
+        let macBook = ScreenInfo(id: 1, frame: screenFrame, hasNotch: true, isMain: true, isPrimary: true)
+
+        for choice in ScreenChoice.allCases {
+            XCTAssertEqual(ScreenInfo.selected(from: [macBook], choice: choice)?.id, 1)
+        }
+    }
+
+    func testExternalOnlyPicksTheOnlyScreenForEveryChoice() {
+        let external = ScreenInfo(id: 1, frame: screenFrame, hasNotch: false, isMain: true, isPrimary: true)
+
+        for choice in ScreenChoice.allCases {
+            XCTAssertEqual(ScreenInfo.selected(from: [external], choice: choice)?.id, 1)
+        }
+    }
+
+    func testTwoExternalsPlusNotchWithMainOnAnExternal() {
+        // Three screens: the notch MacBook, and two externals, one of which is both `isMain`
+        // (the user's focus) and `isPrimary` (menu bar) — none of the three coincide by default.
+        let notch = ScreenInfo(id: 1, frame: screenFrame, hasNotch: true, isMain: false, isPrimary: false)
+        let mainExternal = ScreenInfo(id: 2, frame: NSRect(x: -1_920, y: 0, width: 1_920, height: 1_080), hasNotch: false, isMain: true, isPrimary: false)
+        let primaryExternal = ScreenInfo(id: 3, frame: NSRect(x: 0, y: 0, width: 2_560, height: 1_440), hasNotch: false, isMain: false, isPrimary: true)
+        let screens = [notch, mainExternal, primaryExternal]
+
+        XCTAssertEqual(ScreenInfo.selected(from: screens, choice: .activeDisplay)?.id, 2)
+        XCTAssertEqual(ScreenInfo.selected(from: screens, choice: .notchDisplay)?.id, 1)
+        XCTAssertEqual(ScreenInfo.selected(from: screens, choice: .primaryDisplay)?.id, 3)
+    }
+
+    func testActiveDisplayFallsBackToNotchThenFirstWhenNoScreenIsMain() {
+        // Defensive: `isMain` should always be set by exactly one screen in practice, but the
+        // fallback chain must still make sense if it somehow isn't.
+        let notch = ScreenInfo(id: 1, frame: screenFrame, hasNotch: true, isMain: false)
+        let external = ScreenInfo(id: 2, frame: screenFrame, hasNotch: false, isMain: false)
+
+        XCTAssertEqual(ScreenInfo.selected(from: [external, notch], choice: .activeDisplay)?.id, 1)
+        XCTAssertEqual(ScreenInfo.selected(from: [external], choice: .activeDisplay)?.id, 2)
+    }
+
+    func testPrimaryDisplayFallsBackToNotchThenMainThenFirstWhenNoScreenIsPrimary() {
+        let main = ScreenInfo(id: 1, frame: screenFrame, hasNotch: false, isMain: true, isPrimary: false)
+        let other = ScreenInfo(id: 2, frame: screenFrame, hasNotch: false, isMain: false, isPrimary: false)
+
+        XCTAssertEqual(ScreenInfo.selected(from: [other, main], choice: .primaryDisplay)?.id, 1)
+        XCTAssertEqual(ScreenInfo.selected(from: [other], choice: .primaryDisplay)?.id, 2)
+    }
+
     func testInsideIsStripContainsOrPanelHovered() {
         // The core of the fix: "inside" is the union of the strip poll and DNK's hover truth.
         let cursorInStrip = NSPoint(x: 500, y: 785) // within notchRect
