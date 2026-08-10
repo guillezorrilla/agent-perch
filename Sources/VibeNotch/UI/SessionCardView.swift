@@ -1,5 +1,8 @@
 import SwiftUI
 
+/// A busy session's full card: glyph, title, "You: …" subtitle, activity/status line, pills,
+/// elapsed. Every busy session gets one of these now (up to `SessionLayout.maxFullCards`) —
+/// the name predates that and is kept only because it's a one-word answer to "which card".
 struct FeaturedSessionCard: View {
     let session: AgentSession
     let onClick: () -> Void
@@ -17,11 +20,13 @@ struct FeaturedSessionCard: View {
                         .foregroundStyle(.white)
                         .lineLimit(1)
 
-                    Text("You: \(session.lastPrompt ?? "No prompt captured")")
-                        .font(.system(size: 11))
-                        .foregroundStyle(Color.vibeGray)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
+                    if let subtitle {
+                        Text("You: \(subtitle)")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Color.vibeGray)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
 
                     statusLine
                 }
@@ -41,6 +46,12 @@ struct FeaturedSessionCard: View {
         .accessibilityLabel("\(session.title), \(statusLabel)")
         .accessibilityHint("Jump to terminal")
         .firstMouseAction(onClick)
+    }
+
+    // No placeholder when there is nothing captured yet — an empty "You: " row would take
+    // vertical space for no information (#21).
+    private var subtitle: String? {
+        SessionTitle.subtitle(forPrompt: session.lastPrompt)
     }
 
     @ViewBuilder

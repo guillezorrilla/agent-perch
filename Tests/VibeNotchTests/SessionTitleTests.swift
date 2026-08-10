@@ -95,6 +95,10 @@ final class SessionTitleTests: XCTestCase {
         )
     }
 
+    // The 40-char cap has no space to break on, so the word-boundary truncation this now
+    // shares with the subtitle path falls back to a hard cut — but still appends an ellipsis,
+    // unlike the raw `prefix(40)` this used to be (that was the mid-word-cut bug in #21: a
+    // compact row could show "…please? Wh" with no ellipsis at all).
     func testPromptIsUsedAndLimitedToFortyCharactersWithoutSummary() throws {
         let prompt = "1234567890123456789012345678901234567890extra"
         XCTAssertEqual(
@@ -103,7 +107,26 @@ final class SessionTitleTests: XCTestCase {
                 lastPrompt: prompt,
                 cwd: "/tmp/folder-name"
             ),
-            "1234567890123456789012345678901234567890"
+            "1234567890123456789012345678901234567890…"
+        )
+    }
+
+    // Regression for #21: a tool-heavy transcript can pack more lines into the byte-bounded
+    // scan window than an arbitrary line-count cap allows, which used to make a real summary
+    // inside that window get silently skipped in favor of the raw last-prompt fallback.
+    func testSummaryBeyondOldFiftyLineTailWindowIsStillFound() throws {
+        let file = temporaryDirectory().appendingPathComponent("session.jsonl")
+        var lines = [#"{"type":"summary","summary":"Buried summary"}"#]
+        lines.append(contentsOf: (0..<80).map { _ in #"{"type":"progress","message":"tool call"}"# })
+        try Data(lines.joined(separator: "\n").utf8).write(to: file)
+
+        XCTAssertEqual(
+            SessionTitle.resolve(
+                sessionFileURL: file,
+                lastPrompt: "can you try again the project please? What else needs doing",
+                cwd: "/tmp/folder-name"
+            ),
+            "Buried summary"
         )
     }
 
@@ -180,6 +203,52 @@ final class CodexSessionTitleTests: XCTestCase {
 
     func testTruncatesLongThreadNamesToSixtyCharacters() {
         let long = String(repeating: "a", count: 100)
-        XCTAssertEqual(SessionTitle.resolveCodex(threadName: long, cwd: "/tmp").count, 60)
+        // One unbroken word has no earlier boundary, so it hard-cuts at 60 plus the ellipsis.
+        XCTAssertEqual(SessionTitle.resolveCodex(threadName: long, cwd: "/tmp"), String(repeating: "a", count: 60) + "…")
+    }
+}
+
+extension SessionTitleTests {
+    func testTruncateBreaksAtWordBoundaryWithEllipsis() {
+        XCTAssertEqual(
+            SessionTitle.truncate("can you try again the project please? What else", max: 30),
+            "can you try again the project…"
+        )
+    }
+
+    // No space anywhere in the first `max` characters — no earlier boundary exists, so this
+    // still hard-cuts, but (unlike a bare `prefix`) it always appends the ellipsis.
+    func testTruncateHardCutsASingleOverlongWord() {
+        XCTAssertEqual(
+            SessionTitle.truncate("supercalifragilisticexpialidocious", max: 10),
+            "supercalif…"
+        )
+    }
+
+    func testTruncateLeavesAShortStringUnchanged() {
+        XCTAssertEqual(SessionTitle.truncate("hello", max: 30), "hello")
+    }
+
+    func testTruncateLeavesAStringExactlyAtTheLimitUnchanged() {
+        XCTAssertEqual(SessionTitle.truncate("12345", max: 5), "12345")
+    }
+
+    func testSubtitleIsNilForNilPrompt() {
+        XCTAssertNil(SessionTitle.subtitle(forPrompt: nil))
+    }
+
+    func testSubtitleIsNilForEmptyOrWhitespacePrompt() {
+        XCTAssertNil(SessionTitle.subtitle(forPrompt: ""))
+        XCTAssertNil(SessionTitle.subtitle(forPrompt: "   \n  "))
+    }
+
+    func testSubtitleReturnsTrimmedPromptWhenPresent() {
+        XCTAssertEqual(SessionTitle.subtitle(forPrompt: "  fix the auth bug  "), "fix the auth bug")
+    }
+
+    func testSubtitleTruncatesAtWordBoundary() {
+        let prompt = String(repeating: "word ", count: 20)
+        let subtitle = SessionTitle.subtitle(forPrompt: prompt, max: 20)
+        XCTAssertEqual(subtitle, "word word word word…")
     }
 }

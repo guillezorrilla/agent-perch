@@ -35,7 +35,7 @@ enum SessionTitle {
             }
         }
         if let prompt = displayablePrompt(lastPrompt) {
-            return String(prompt.prefix(40))
+            return truncate(prompt, max: 40)
         }
         return cwd.hasPrefix("/") ? URL(fileURLWithPath: cwd).lastPathComponent : cwd
     }
@@ -45,7 +45,7 @@ enum SessionTitle {
     /// the cwd basename.
     static func resolveCodex(threadName: String?, cwd: String) -> String {
         if let threadName, isUsableThreadName(threadName) {
-            return String(threadName.prefix(60))
+            return truncate(threadName, max: 60)
         }
         return cwd.hasPrefix("/") ? URL(fileURLWithPath: cwd).lastPathComponent : cwd
     }
@@ -54,6 +54,26 @@ enum SessionTitle {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
         return !trimmed.hasPrefix("/") && !trimmed.hasPrefix("~/")
+    }
+
+    /// The "You: …" subtitle text, or nil when there is nothing worth showing — no placeholder
+    /// string, no empty row taking vertical space in the card.
+    static func subtitle(forPrompt prompt: String?, max: Int = 60) -> String? {
+        guard let prompt = prompt?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !prompt.isEmpty else { return nil }
+        return truncate(prompt, max: max)
+    }
+
+    /// Truncates at the last whole word that fits within `max` characters, appending an
+    /// ellipsis — never mid-word, unlike a hard character slice. A single word longer than
+    /// `max` has no earlier boundary to use, so it still gets hard-cut + ellipsis.
+    static func truncate(_ value: String, max limit: Int) -> String {
+        guard value.count > limit else { return value }
+        let prefix = value.prefix(limit)
+        if let lastSpace = prefix.lastIndex(of: " "), lastSpace > prefix.startIndex {
+            return String(prefix[..<lastSpace]) + "…"
+        }
+        return String(prefix) + "…"
     }
 
     // Harness-generated turns (task notifications, system reminders, slash-command
@@ -84,8 +104,11 @@ enum SessionTitle {
         let start = end > 65_536 ? end - 65_536 : 0
         try? handle.seek(toOffset: start)
         guard let tail = try? handle.readToEnd() else { return nil }
+        // Scan every line in the byte-bounded window, not just the last N by count: a
+        // tool-heavy transcript can pack more than a fixed line cap into 64KB, which let a
+        // real custom-title/summary line inside this window still be silently skipped (#21).
         let tailMetadata = metadata(
-            in: tail.split(separator: 0x0A).suffix(50).reversed(),
+            in: tail.split(separator: 0x0A).reversed(),
             basePosition: start
         )
 
@@ -94,7 +117,7 @@ enum SessionTitle {
         try? handle.seek(toOffset: 0)
         guard let head = try? handle.read(upToCount: 16_384) else { return tailMetadata }
         let headMetadata = metadata(
-            in: head.split(separator: 0x0A).prefix(20),
+            in: head.split(separator: 0x0A),
             basePosition: 0
         )
         return merged(tailMetadata, fallback: headMetadata)

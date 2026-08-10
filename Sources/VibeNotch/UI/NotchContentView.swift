@@ -26,15 +26,17 @@ struct NotchContentView: View {
 
     var body: some View {
         Group {
-            if let featuredSession {
+            if !store.sessions.isEmpty {
                 VStack(alignment: .leading, spacing: 10) {
                     UsageStripView(providers: usageProvider.providers) {
                         Task { await usageProvider.forceRefresh() }
                     }
 
-                    featuredCard(for: featuredSession)
+                    ForEach(layout.fullCards) { session in
+                        fullCard(for: session)
+                    }
 
-                    ForEach(remainingSessions) { session in
+                    ForEach(layout.compactRows) { session in
                         CompactSessionRow(session: session) {
                             jump(to: session)
                         }
@@ -75,28 +77,44 @@ struct NotchContentView: View {
         }
     }
 
-    private var featuredSession: AgentSession? {
-        store.sessions.first { $0.status == .needsAction } ?? store.sessions.first
+    private var layout: SessionLayout.Split {
+        SessionLayout.split(sessions: store.sessions)
     }
 
-    private var remainingSessions: [AgentSession] {
-        guard let featuredSession else { return store.sessions }
-        return store.sessions.filter { $0.id != featuredSession.id }
+    /// The topmost full card currently showing a pending-action card. Only this one owns the
+    /// global `CardShortcutMonitor` — if more than one session somehow needs an answer at
+    /// once, every one of them still renders its permission/plan/question card (a full card
+    /// never shows both that and its normal body), but ⌘Y/⌘N/⌘1…9 answer whichever renders
+    /// on top; the rest stay reachable by clicking or jumping to the terminal.
+    private var topmostPendingCard: (session: AgentSession, pending: PendingAction)? {
+        for session in layout.fullCards {
+            guard session.status == .needsAction,
+                  let pending = PendingAction.parse(
+                      toolName: session.pendingToolName,
+                      input: session.pendingToolInput
+                  ) else { continue }
+            return (session, pending)
+        }
+        return nil
     }
 
     @ViewBuilder
-    private func featuredCard(for session: AgentSession) -> some View {
+    private func fullCard(for session: AgentSession) -> some View {
         if session.status == .needsAction,
            let pending = PendingAction.parse(
                toolName: session.pendingToolName,
                input: session.pendingToolInput
            ) {
-            // The monitor's lifetime is the card's: SwiftUI tears this branch down when the
-            // panel collapses or the session stops needing an answer, so the global key
-            // monitor can never outlive the card it belongs to.
-            pendingCard(pending, for: session)
-                .onAppear { shortcuts.start(handleShortcut) }
-                .onDisappear { shortcuts.stop() }
+            if session.id == topmostPendingCard?.session.id {
+                // The monitor's lifetime is the card's: SwiftUI tears this branch down when
+                // the panel collapses or the session stops needing an answer, so the global
+                // key monitor can never outlive the card it belongs to.
+                pendingCard(pending, for: session)
+                    .onAppear { shortcuts.start(handleShortcut) }
+                    .onDisappear { shortcuts.stop() }
+            } else {
+                pendingCard(pending, for: session)
+            }
         } else {
             FeaturedSessionCard(session: session) {
                 jump(to: session)
@@ -126,12 +144,7 @@ struct NotchContentView: View {
     /// individual renders, and a stale capture would answer a request the agent has already
     /// moved past. It also means "no card on screen" simply finds nothing to answer.
     private func handleShortcut(_ shortcut: CardShortcut) {
-        guard let session = featuredSession,
-              session.status == .needsAction,
-              let pending = PendingAction.parse(
-                  toolName: session.pendingToolName,
-                  input: session.pendingToolInput
-              ) else { return }
+        guard let (session, pending) = topmostPendingCard else { return }
 
         switch (pending, shortcut) {
         case let (.question(prompt), .option(number)):
