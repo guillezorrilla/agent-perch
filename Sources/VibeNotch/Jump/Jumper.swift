@@ -112,6 +112,18 @@ final class Jumper: @unchecked Sendable {
     }
 
     private func resolvePlan(for session: AgentSession) -> JumpPlan {
+        // A GUI workspace, not a terminal — none of the tty/Warp/cmux machinery below applies,
+        // and running it anyway risks matching an unrelated terminal process that merely shares
+        // this workspace's cwd (#3).
+        if session.agentName == "Antigravity" {
+            return JumpPlan(
+                target: .openAntigravity(path: session.cwd, agyAvailable: session.resumeCommand != nil),
+                cwd: session.cwd,
+                terminal: nil,
+                resumeCommand: session.resumeCommand
+            )
+        }
+
         let table = processes.processes()
         let target = JumpTarget.resolve(session: session, processes: table)
         if target.isAmbiguous {
@@ -147,6 +159,13 @@ final class Jumper: @unchecked Sendable {
             )
         }
 
+        // Same shape as Warp above, but there is no sqlite database or URL scheme to ask — only
+        // a best-effort CLI focus attempt (cached, see `CmuxLauncher`), off the main actor right
+        // here since it may spawn `cmux --help` and wait for it to exit.
+        if terminal == "cmux", CmuxLauncher.attemptFocus(cwd: session.cwd) {
+            return JumpPlan(target: .alreadyFocused, cwd: session.cwd, terminal: terminal, resumeCommand: session.resumeCommand)
+        }
+
         // The session's own tty, else the tty of the process identified for it, else any shell
         // still sitting at the cwd — the user's open tab after the agent exited (#10). That last
         // one is the most expensive call we make and only iTerm/Terminal can use its answer, so
@@ -178,10 +197,43 @@ final class Jumper: @unchecked Sendable {
                 focus: { warpFocuser.focus(tabIndex: $0) },
                 fallback: { openNewTab(at: plan.cwd, preferring: plan.terminal, resumeCommand: plan.resumeCommand) }
             )
+        case let .openAntigravity(path, agyAvailable):
+            let (executable, arguments) = Self.antigravityLaunchCommand(path: path, agyAvailable: agyAvailable)
+            return Self.runDetached(executable, arguments)
+        case .alreadyFocused:
+            return true
         case .newTab:
             break
         }
         return openNewTab(at: plan.cwd, preferring: plan.terminal, resumeCommand: plan.resumeCommand)
+    }
+
+    /// `agy` (if on PATH) launches through the user's shell env exactly like a terminal command
+    /// would; otherwise `open -a` asks LaunchServices for "Antigravity IDE" directly. Either one
+    /// re-focuses an already-open window on this folder rather than spawning a second one — the
+    /// same way opening a path macOS already has open in an app just brings it forward.
+    static func antigravityLaunchCommand(path: String, agyAvailable: Bool) -> (executable: String, arguments: [String]) {
+        agyAvailable
+            ? ("/usr/bin/env", ["agy", path])
+            : ("/usr/bin/open", ["-a", "Antigravity IDE", path])
+    }
+
+    /// Fire-and-forget: doesn't wait for the launched app to actually finish opening, matching
+    /// every other opener above (the AppleScript `create window`/`do script` calls don't wait for
+    /// the terminal to finish drawing either) — only whether the launch itself was accepted.
+    @discardableResult
+    private static func runDetached(_ executable: String, _ arguments: [String]) -> Bool {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+        } catch {
+            return false
+        }
+        return true
     }
 
     @MainActor

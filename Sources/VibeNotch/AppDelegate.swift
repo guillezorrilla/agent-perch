@@ -84,7 +84,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         sessionsWatcher = PathWatcher(directoryURLs: [
             store.projectsDirectory,
             store.codexHome.appendingPathComponent("sessions", isDirectory: true),
-            store.codexHome.appendingPathComponent("session_index.jsonl", isDirectory: false)
+            store.codexHome.appendingPathComponent("session_index.jsonl", isDirectory: false),
+            store.antigravityHome.appendingPathComponent("User/workspaceStorage", isDirectory: true),
+            store.antigravityHome.appendingPathComponent("User/globalStorage/storage.json", isDirectory: false)
         ]) { [weak store] in
             Task { @MainActor in store?.refresh() }
         }

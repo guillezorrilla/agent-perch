@@ -137,6 +137,13 @@ struct JumpPlan: Equatable, Sendable {
         case focusTTY(String)
         /// ⌘-digit Warp's tab, located moments ago so a just-opened tab is included.
         case warpTab(Int)
+        /// A GUI workspace, not a terminal — Antigravity has no tty to focus at all. `agy <path>`
+        /// when it's on PATH, else `open -a "Antigravity IDE" <path>`; either one re-focuses an
+        /// already-open window on this folder rather than spawning a second one.
+        case openAntigravity(path: String, agyAvailable: Bool)
+        /// Already focused off the main actor — cmux's own CLI subcommand, if one was found, or
+        /// (lacking one) plain activation. `perform` only needs to report success.
+        case alreadyFocused
         /// Nothing live to focus: reopen at the cwd.
         case newTab
     }

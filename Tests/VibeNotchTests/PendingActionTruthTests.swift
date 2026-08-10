@@ -372,6 +372,7 @@ final class PendingActionStoreTests: XCTestCase {
         SessionStore(
             projectsDirectory: temporaryDirectory(),
             codexHome: temporaryDirectory(),
+            antigravityHome: temporaryDirectory(),
             processProvider: { [] }
         )
     }
