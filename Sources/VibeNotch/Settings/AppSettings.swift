@@ -69,6 +69,10 @@ final class AppSettings: ObservableObject {
     @AppStorage("soundsEnabled") private var storedSoundsEnabled = true
     @AppStorage("panelWidth") private var storedPanelWidth = 500.0
     @AppStorage("needsActionDwellTime") private var storedDwellTime = NeedsActionDwellTime.fiveSeconds
+    // Keyed identically to what `CodexSessionSource`'s default `showSubAgentSessions` closure
+    // reads directly from `UserDefaults.standard` — @AppStorage is backed by that same store,
+    // so no plumbing is needed to get this toggle from Settings down to session discovery.
+    @AppStorage("showSubAgentSessions") private var storedShowSubAgentSessions = false
     @Published private var installedHooks = false
 
     let applicationSupportDirectory: URL
@@ -137,6 +141,15 @@ final class AppSettings: ObservableObject {
             guard newValue != storedDwellTime else { return }
             objectWillChange.send()
             storedDwellTime = newValue
+        }
+    }
+
+    var showSubAgentSessions: Bool {
+        get { storedShowSubAgentSessions }
+        set {
+            guard newValue != storedShowSubAgentSessions else { return }
+            objectWillChange.send()
+            storedShowSubAgentSessions = newValue
         }
     }
 

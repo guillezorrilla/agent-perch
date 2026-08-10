@@ -65,9 +65,18 @@ struct TTYResolver {
             || command.contains("/@anthropic-ai/claude-code/")
     }
 
+    // ChatGPT.app embeds its own binary literally named "codex" (used as an internal
+    // "app-server", plus separate XPC helper processes) — none of these are an interactive
+    // CLI session, so every one of these markers must be rejected the way isClaudeCLI already
+    // rejects Claude.app's helpers (#24).
     static func isCodexCLI(command: String) -> Bool {
         let command = command.lowercased()
-        guard command.contains("codex") else { return false }
+        guard command.contains("codex"),
+              !command.contains("chatgpt.app"),
+              !command.contains("codex framework.framework"),
+              !command.contains("codex (service)"),
+              !command.contains("codex (renderer)"),
+              !command.contains("app-server") else { return false }
 
         let executable = command.split(whereSeparator: \.isWhitespace).first.map(String.init) ?? ""
         let executableName = URL(fileURLWithPath: executable).lastPathComponent

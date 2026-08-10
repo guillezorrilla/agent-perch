@@ -157,6 +157,33 @@ final class CodexJumpTests: XCTestCase {
         XCTAssertFalse(TTYResolver.isCodexCLI(command: "/usr/local/bin/claude"))
     }
 
+    // ChatGPT.app embeds its own binary literally named "codex", plus separate XPC helper
+    // processes — none of these are an interactive CLI session (#24). Each marker is checked
+    // both alongside the full ChatGPT.app path (the realistic shape) and in isolation (so the
+    // rejection isn't accidentally riding solely on the "chatgpt.app" substring).
+    func testIsCodexCLIRejectsChatGPTAppHelperProcesses() {
+        XCTAssertFalse(TTYResolver.isCodexCLI(
+            command: "/Applications/ChatGPT.app/Contents/Resources/codex --codex-run-as-apiserver app-server"
+        ))
+        XCTAssertFalse(TTYResolver.isCodexCLI(
+            command: "/Applications/ChatGPT.app/Contents/Frameworks/Codex Framework.framework/Versions/A/Codex Framework"
+        ))
+        XCTAssertFalse(TTYResolver.isCodexCLI(
+            command: "/Applications/ChatGPT.app/Contents/Frameworks/Codex Framework.framework/XPCServices/Codex (Service).xpc/Contents/MacOS/Codex (Service)"
+        ))
+        XCTAssertFalse(TTYResolver.isCodexCLI(
+            command: "/Applications/ChatGPT.app/Contents/Frameworks/Codex Framework.framework/XPCServices/Codex (Renderer).xpc/Contents/MacOS/Codex (Renderer)"
+        ))
+        // Each marker in isolation, without the ChatGPT.app path prefix.
+        XCTAssertFalse(TTYResolver.isCodexCLI(command: "codex app-server"))
+        XCTAssertFalse(TTYResolver.isCodexCLI(command: "Codex Framework.framework/Versions/A/Codex Framework"))
+        XCTAssertFalse(TTYResolver.isCodexCLI(command: "Codex (Service)"))
+        XCTAssertFalse(TTYResolver.isCodexCLI(command: "Codex (Renderer)"))
+        // A real interactive CLI invocation must still be accepted.
+        XCTAssertTrue(TTYResolver.isCodexCLI(command: "/usr/local/bin/codex"))
+        XCTAssertTrue(TTYResolver.isCodexCLI(command: "/opt/homebrew/bin/codex resume 019fe8a4-1234"))
+    }
+
     func testGeneralizedAgentCLICheckDispatchesByAgentName() {
         XCTAssertTrue(TTYResolver.isAgentCLI("Codex", command: "/usr/local/bin/codex"))
         XCTAssertFalse(TTYResolver.isAgentCLI("Codex", command: "/usr/local/bin/claude"))
