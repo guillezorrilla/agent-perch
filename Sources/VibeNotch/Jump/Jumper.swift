@@ -89,6 +89,35 @@ final class Jumper: @unchecked Sendable {
         return true
     }
 
+    /// The three terminals #4 taught this ladder about, split out of `resolvePlan` the way
+    /// `routeWarpJump` already is so the routing can be tested without a live WezTerm, Ghostty or
+    /// cmux. `nil` means "not handled here" — the caller carries on down the ladder, so none of
+    /// these can dead-end a jump.
+    ///
+    /// WezTerm is focused right here, off the main actor, and reports back as `.alreadyFocused`;
+    /// the other two can only be focused by AppleScript, which has to cross to the main actor, so
+    /// they hand `perform` the app and the cwd to match.
+    static func routeTerminalJump(
+        terminal: String?,
+        cwd: String,
+        tty: String?,
+        focusWezTerm: (String?, String) -> Bool,
+        cmuxAvailable: () -> Bool
+    ) -> JumpPlan.Target? {
+        switch terminal {
+        case "wezterm":
+            return focusWezTerm(tty, cwd) ? .alreadyFocused : nil
+        case "cmux":
+            // cmux not installed at all still falls through to the pre-cmux ladder, exactly as it
+            // did before (#3).
+            return cmuxAvailable() ? .focusTerminalByCwd(app: .cmux, cwd: cwd) : nil
+        case "ghostty":
+            return .focusTerminalByCwd(app: .ghostty, cwd: cwd)
+        default:
+            return nil
+        }
+    }
+
     @MainActor
     @discardableResult
     func jump(_ session: AgentSession) async -> Bool {
@@ -152,11 +181,20 @@ final class Jumper: @unchecked Sendable {
             )
         }
 
-        // Same shape as Warp above, but there is no sqlite database or URL scheme to ask — only
-        // a best-effort CLI focus attempt (cached, see `CmuxLauncher`), off the main actor right
-        // here since it may spawn `cmux --help` and wait for it to exit.
-        if terminal == "cmux", CmuxLauncher.attemptFocus(cwd: session.cwd) {
-            return JumpPlan(target: .alreadyFocused, cwd: session.cwd, terminal: terminal, resumeCommand: session.resumeCommand)
+        if let routed = Self.routeTerminalJump(
+            terminal: terminal,
+            cwd: session.cwd,
+            tty: target.tty,
+            // Runs right here, off the main actor: it shells out to `wezterm cli` and waits (#4).
+            focusWezTerm: { WezTermFocuser.attemptFocus(tty: $0, cwd: $1) },
+            cmuxAvailable: { CmuxLauncher.isAvailable() }
+        ) {
+            return JumpPlan(
+                target: routed,
+                cwd: session.cwd,
+                terminal: terminal,
+                resumeCommand: session.resumeCommand
+            )
         }
 
         // The session's own tty, else the tty of the process identified for it, else any shell
@@ -182,6 +220,8 @@ final class Jumper: @unchecked Sendable {
         switch plan.target {
         case let .focusTTY(tty):
             if focus(tty: tty) { return true }
+        case let .focusTerminalByCwd(app, cwd):
+            if focusTerminalByCwd(app: app, cwd: cwd) { return true }
         case let .warpTab(index):
             return Self.routeWarpJump(
                 cwd: plan.cwd,
@@ -273,6 +313,58 @@ final class Jumper: @unchecked Sendable {
         }
 
         return false
+    }
+
+    /// Ghostty and cmux expose a surface's `working directory` but NO tty (#4), so this is a cwd
+    /// match and nothing better is available. Be clear about what that costs: two surfaces sitting
+    /// in the same directory are indistinguishable here and the first one found wins, so this can
+    /// land on the wrong surface. iTerm, Terminal and WezTerm stay tty-exact and are unaffected.
+    ///
+    /// `focus` brings the surface's window to the front by itself — verified against both apps
+    /// while another app held focus — so there is no separate `activate`. An app whose scripting
+    /// is switched off (cmux ships with `macos-applescript` disabled) reports no surfaces at all
+    /// rather than erroring, which arrives here as an ordinary miss.
+    @MainActor
+    private func focusTerminalByCwd(app: JumpPlan.CwdFocusApp, cwd: String) -> Bool {
+        guard isInstalled(app.bundleIdentifier) else { return false }
+        let candidates = Self.cwdSpellings(cwd)
+            .map { "\"\(AppleScriptRunner.stringLiteral($0))\"" }
+            .joined(separator: ", ")
+
+        if appleScript.run("""
+            tell application id "\(app.bundleIdentifier)"
+                repeat with aTerminal in terminals
+                    if {\(candidates)} contains (working directory of aTerminal) then
+                        focus aTerminal
+                        return true
+                    end if
+                end repeat
+            end tell
+            return false
+            """) {
+            return true
+        }
+
+        return app.activatesOnMiss ? CmuxLauncher.activate() : false
+    }
+
+    /// Every spelling of `cwd` the AppleScript comparison above may have to match.
+    ///
+    /// `CanonicalPath` is the codebase's answer to one path arriving spelled several ways, but it
+    /// cannot run inside an AppleScript string comparison — so the differences it would have
+    /// collapsed are enumerated here instead. The one that actually bites is macOS's `/private`
+    /// aliasing: a surface reports its real cwd (`/private/tmp`) while a hook reports the shell's
+    /// (`/tmp`). Keeping the original spelling alongside the resolved one covers a user symlink,
+    /// where the shell's `PWD` is the unresolved name (#4).
+    static func cwdSpellings(_ cwd: String) -> [String] {
+        let canonical = CanonicalPath.canonical(cwd)
+        var spellings = [canonical]
+        for root in ["/var", "/tmp", "/etc"]
+        where canonical == root || canonical.hasPrefix(root + "/") {
+            spellings.append("/private" + canonical)
+        }
+        if cwd != canonical { spellings.append(cwd) }
+        return spellings
     }
 
     // iTerm's `command` parameter execs WITHOUT a shell — `cd x; exec y` word-splits and
