@@ -78,6 +78,35 @@ enum WezTermFocuser {
         return activateApp()
     }
 
+    /// Types `text` into the pane holding `tty` — `wezterm cli send-text`, WezTerm's own text API
+    /// (#42). Lives here rather than in `ActionInjector` because the tty→pane lookup it needs is
+    /// the one `attemptFocus` already owns, and two copies of that would be two things to keep
+    /// right.
+    ///
+    /// Nothing is focused and nothing is guessed: `--pane-id` addresses the pane directly, so an
+    /// answer cannot land in whatever surface was in front. `cwd` is deliberately NOT offered to
+    /// `selectPane` the way focus does — for a jump, landing in a sibling pane in the same repo is
+    /// a wrong window the user can see and fix; for an answer it silently approves someone else's
+    /// prompt. A tty matching no pane refuses.
+    ///
+    /// `--no-paste` is load-bearing. Without it `send-text` wraps the bytes in a bracketed paste
+    /// for any pane that has enabled one — verified live against a pane in bracketed-paste mode,
+    /// where the same `1` arrived as `^[[200~1^[[201~` without the flag and as a bare `1` with it —
+    /// and a TUI permission prompt reads a paste as text for its composer, not as the keypress
+    /// that picks an option.
+    static func sendText(
+        _ text: String,
+        tty: String?,
+        isAvailable: () -> Bool = { Self.isAvailable() },
+        listPanes: () -> String? = Self.listPanes,
+        send: (Int, String) -> Bool = { Self.send($1, toPaneID: $0) }
+    ) -> Bool {
+        guard isAvailable(),
+              let listing = listPanes(),
+              let paneId = selectPane(from: parsePanes(listing), tty: tty, cwd: nil) else { return false }
+        return send(paneId, text)
+    }
+
     static func parsePanes(_ json: String) -> [Pane] {
         guard let data = json.data(using: .utf8),
               let panes = try? JSONDecoder().decode([Pane].self, from: data) else { return [] }
@@ -119,6 +148,14 @@ enum WezTermFocuser {
 
     private static func listPanes() -> String? {
         output("/usr/bin/env", ["wezterm", "cli", "list", "--format", "json"])
+    }
+
+    /// `--` ends the option list, so an answer starting with a dash can never be read as a flag.
+    private static func send(_ text: String, toPaneID paneId: Int) -> Bool {
+        output(
+            "/usr/bin/env",
+            ["wezterm", "cli", "send-text", "--pane-id", String(paneId), "--no-paste", "--", text]
+        ) != nil
     }
 
     private static func activatePane(_ paneId: Int) -> Bool {

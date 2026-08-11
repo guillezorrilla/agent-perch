@@ -90,8 +90,17 @@ final class ActionInjectorTests: XCTestCase {
             ),
             .iTerm(tty: "ttys001", key: .text("1"))
         )
-        XCTAssertNil(
-            ActionInjector.plan(terminalName: "Ghostty", tty: "ttys001", cwd: "/repo", decision: .allow)
+        XCTAssertEqual(
+            ActionInjector.plan(
+                terminalName: "WezTerm", tty: "ttys001", cwd: "/repo", decision: .allow
+            ),
+            .wezTerm(tty: "ttys001", key: .text("1"))
+        )
+        // …and the reverse for Ghostty, which has no per-surface tty at all: it is addressed by
+        // cwd whether or not a tty happens to be known (#42). It used to have no answer route.
+        XCTAssertEqual(
+            ActionInjector.plan(terminalName: "Ghostty", tty: "ttys001", cwd: "/repo", decision: .allow),
+            .surface(app: .ghostty, cwd: "/repo", key: .text("1"))
         )
     }
 
