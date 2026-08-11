@@ -3,6 +3,9 @@ import SwiftUI
 
 struct SettingsView: View {
     @ObservedObject var settings: AppSettings
+    /// Handed in from `UsageProvider.registeredProviders` rather than listed here, so a sixth
+    /// `UsageSource` gets its toggle without touching this file (#39).
+    var usageProviders: [String] = []
 
     var body: some View {
         Form {
@@ -57,6 +60,24 @@ struct SettingsView: View {
                     }
                 }
                 .pickerStyle(.segmented)
+            }
+
+            // Empty only in a preview or a test rig; an empty `Section` would still draw its box.
+            if !usageProviders.isEmpty {
+                Section("Usage") {
+                    // One toggle per row rather than the VStack the single-toggle sections below
+                    // use: five of them in a stack would leave the switches ragged instead of
+                    // aligned down the Form's own right edge.
+                    ForEach(usageProviders, id: \.self) { provider in
+                        Toggle(provider, isOn: Binding(
+                            get: { settings.showsUsageProvider(provider) },
+                            set: { settings.setUsageProvider(provider, shown: $0) }
+                        ))
+                    }
+                    Text("Which providers get a row in the usage strip above the session list. Antigravity takes two lines on its own — switching rows off is how you get that panel height back. A provider you switch off is not polled at all.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             Section("General") {
@@ -121,24 +142,28 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .padding(12)
-        .frame(width: 500, height: 570)
+        // Taller than it was: the Usage section adds a row per provider. The grouped Form still
+        // scrolls, so this only decides how much is visible without scrolling (#39).
+        .frame(width: 500, height: 680)
     }
 }
 
 @MainActor
 final class SettingsWindowController {
     private let settings: AppSettings
+    private let usageProviders: [String]
     private var window: NSWindow?
 
-    init(settings: AppSettings) {
+    init(settings: AppSettings, usageProviders: [String] = []) {
         self.settings = settings
+        self.usageProviders = usageProviders
     }
 
     func show() {
         settings.refreshHooksInstalled()
         if window == nil {
             let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 500, height: 570),
+                contentRect: NSRect(x: 0, y: 0, width: 500, height: 680),
                 styleMask: [.titled, .closable],
                 backing: .buffered,
                 defer: false
@@ -146,7 +171,7 @@ final class SettingsWindowController {
             window.title = "VibeNotch Settings"
             window.isReleasedWhenClosed = false
             window.contentViewController = NSHostingController(
-                rootView: SettingsView(settings: settings)
+                rootView: SettingsView(settings: settings, usageProviders: usageProviders)
             )
             window.center()
             self.window = window
