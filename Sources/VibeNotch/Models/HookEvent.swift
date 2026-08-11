@@ -99,7 +99,9 @@ enum ActivityLine {
             return "Fetching \(host)"
         case "WebSearch":
             return "Searching the web"
-        case "TodoWrite":
+        case "TodoWrite", "TaskCreate", "TaskUpdate":
+            // The checklist rendered below IS this call's output, so the status line says only
+            // that the plan moved — never which item, which would then say it twice (#41).
             return "Updating the plan"
         case "Task":
             return "Delegating a subtask"

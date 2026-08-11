@@ -95,7 +95,7 @@ final class HookTests: XCTestCase {
             if eventName == "PreToolUse" {
                 XCTAssertEqual(
                     entries[0]["matcher"] as? String,
-                    "Edit|MultiEdit|Write|Bash|NotebookEdit|ExitPlanMode|AskUserQuestion"
+                    "Edit|MultiEdit|Write|Bash|NotebookEdit|ExitPlanMode|AskUserQuestion|TodoWrite|TaskCreate|TaskUpdate"
                 )
             } else {
                 XCTAssertNil(entries[0]["matcher"])
@@ -134,13 +134,15 @@ final class HookTests: XCTestCase {
     }
 
     func testInstallReplacesOldPreToolUseMatcher() throws {
+        // The migration every existing install goes through for #41: without the checklist tools
+        // spelled out, `PreToolUse` never fires for them and the ✓/■/□ rows can never appear.
         let directory = temporaryDirectory()
         let settingsURL = directory.appendingPathComponent("settings.json")
         let binURL = directory.appendingPathComponent("bin/vibenotch-hook")
         try writeJSON([
             "hooks": [
                 "PreToolUse": [[
-                    "matcher": "Edit|MultiEdit|Write|Bash|NotebookEdit",
+                    "matcher": "Edit|MultiEdit|Write|Bash|NotebookEdit|ExitPlanMode|AskUserQuestion",
                     "hooks": [[
                         "type": "command",
                         "command": "'\(binURL.path)' PreToolUse"
@@ -158,7 +160,7 @@ final class HookTests: XCTestCase {
         XCTAssertEqual(entries.count, 1)
         XCTAssertEqual(
             entries[0]["matcher"] as? String,
-            "Edit|MultiEdit|Write|Bash|NotebookEdit|ExitPlanMode|AskUserQuestion"
+            "Edit|MultiEdit|Write|Bash|NotebookEdit|ExitPlanMode|AskUserQuestion|TodoWrite|TaskCreate|TaskUpdate"
         )
     }
 
