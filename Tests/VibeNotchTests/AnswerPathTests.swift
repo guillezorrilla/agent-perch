@@ -430,6 +430,170 @@ final class AnswerPathTests: XCTestCase {
         )
     }
 
+    // MARK: - #48: a session with no tty could be jumped to and never answered
+
+    /// The regression, from a real permission prompt in iTerm: the terminal resolved fine and
+    /// `session.tty` was nil, so `plan` refused with "no tty" while clicking that same card jumped
+    /// straight into the session. Jump recovers the tty of the shell sitting at the cwd; the answer
+    /// path now takes the same rung, and the recovered tty delivers exactly like a reported one.
+    func testASessionWithNoTTYIsAnsweredThroughTheTTYRecoveredFromItsCwd() {
+        var asked: [String] = []
+
+        XCTAssertEqual(
+            ActionInjector.plan(
+                for: session(tty: nil, cwd: "/repo", terminalName: "iTerm"),
+                key: .text("1"),
+                recoverTTY: { asked.append($0); return "ttys027" }
+            ),
+            .iTerm(tty: "ttys027", key: .text("1"))
+        )
+        XCTAssertEqual(asked, ["/repo"], "the cwd jump would have searched, and only that")
+
+        // The nameless case #42 opened up reaches the ladder through the same recovery.
+        XCTAssertEqual(
+            ActionInjector.plan(
+                for: session(tty: nil, cwd: "/repo", terminalName: nil),
+                key: .escape,
+                recoverTTY: { _ in "/dev/ttys027" }
+            ),
+            .ttyLadder(tty: "ttys027", key: .escape)
+        )
+        // Terminal.app is the other app a tty alone can be aimed at, so it recovers too.
+        XCTAssertEqual(
+            ActionInjector.plan(
+                for: session(tty: "", cwd: "/repo", terminalName: "Terminal.app"),
+                key: .text("3"),
+                recoverTTY: { _ in "ttys027" }
+            ),
+            .terminal(tty: "ttys027", key: .text("3"))
+        )
+    }
+
+    /// A hook reports the tty from inside the session's own terminal; a cwd match only finds a
+    /// shell that happens to sit in the right directory. The stronger signal wins, and the `lsof`
+    /// behind the weaker one is never even paid for.
+    func testAReportedTTYIsPreferredAndTheRecoveryIsNotAttempted() {
+        var recoveries = 0
+
+        XCTAssertEqual(
+            ActionInjector.plan(
+                for: session(tty: "ttys001", cwd: "/repo", terminalName: "iTerm"),
+                key: .text("1"),
+                recoverTTY: { _ in recoveries += 1; return "ttys027" }
+            ),
+            .iTerm(tty: "ttys001", key: .text("1"))
+        )
+        XCTAssertEqual(recoveries, 0)
+    }
+
+    /// The gate that keeps #42's refusals refusing. `Jumper.canExactFocus` admits nil, iTerm and
+    /// Terminal and nothing else, so a cwd-recovered tty can never reach WezTerm — where a sibling
+    /// pane in the same directory would take the keystroke — nor Ghostty/cmux, which are answered
+    /// by cwd and never by tty. None of them may even ask.
+    func testTheRecoveryIsNeverOfferedToATerminalThatCannotBeAimedAtByTTY() {
+        var asked: [String] = []
+        let recover: (String) -> String? = { asked.append($0); return "ttys027" }
+
+        for terminal in ["WezTerm", "Kitty", "tmux", "Hyper"] {
+            XCTAssertNil(
+                ActionInjector.plan(
+                    for: session(tty: nil, cwd: "/repo", terminalName: terminal),
+                    key: .text("1"),
+                    recoverTTY: recover
+                ),
+                "\(terminal) must refuse rather than be aimed at a shell that shares the cwd"
+            )
+        }
+        // Ghostty, cmux and Warp still answer by cwd — unchanged, and still without a tty.
+        XCTAssertEqual(
+            ActionInjector.plan(
+                for: session(tty: nil, cwd: "/repo", terminalName: "Ghostty"),
+                key: .text("1"),
+                recoverTTY: recover
+            ),
+            .surface(app: .ghostty, cwd: "/repo", key: .text("1"))
+        )
+        XCTAssertEqual(
+            ActionInjector.plan(
+                for: session(tty: nil, cwd: "/repo", terminalName: "cmux"),
+                key: .escape,
+                recoverTTY: recover
+            ),
+            .surface(app: .cmux, cwd: "/repo", key: .escape)
+        )
+        XCTAssertEqual(
+            ActionInjector.plan(
+                for: session(tty: nil, cwd: "/repo", terminalName: "Warp"),
+                key: .text("2"),
+                recoverTTY: recover
+            ),
+            .warp(cwd: "/repo", key: .text("2"))
+        )
+        XCTAssertEqual(asked, [], "no terminal here can use a tty recovered from a cwd")
+    }
+
+    /// Nothing to search and nothing found are both still refusals — the fallback widens what can
+    /// be answered, never what can be guessed at.
+    func testASessionWithNeitherTTYNorARecoverableOneStillRefuses() {
+        var recoveries = 0
+
+        // No cwd: there is nowhere to look, so no `lsof` is run to find that out.
+        XCTAssertNil(
+            ActionInjector.plan(
+                for: session(tty: nil, cwd: "", terminalName: "iTerm"),
+                key: .text("1"),
+                recoverTTY: { _ in recoveries += 1; return "ttys027" }
+            )
+        )
+        XCTAssertEqual(recoveries, 0)
+
+        // A cwd no shell sits at any more: the agent exited and its tab was closed.
+        XCTAssertNil(
+            ActionInjector.plan(
+                for: session(tty: nil, cwd: "/repo", terminalName: nil),
+                key: .text("1"),
+                recoverTTY: { _ in nil }
+            )
+        )
+        XCTAssertNil(
+            ActionInjector.plan(
+                for: session(tty: nil, cwd: "/repo", terminalName: "iTerm"),
+                key: .text("1"),
+                recoverTTY: { _ in "" }
+            )
+        )
+    }
+
+    /// ⌘0 is not an option on any card, and the gate that says so runs before any lookup does —
+    /// which is also what keeps this test off a real `lsof`.
+    func testTheDigitGateRejectsZeroBeforeAnythingIsLookedUp() async {
+        let injected = await ActionInjector().inject(
+            "0",
+            into: session(tty: nil, cwd: "/repo", terminalName: "iTerm")
+        )
+        XCTAssertFalse(injected)
+    }
+
+    private func session(tty: String?, cwd: String, terminalName: String?) -> AgentSession {
+        AgentSession(
+            sessionId: "session-1",
+            agentName: "Claude",
+            cwd: cwd,
+            modifiedAt: Date(),
+            status: .needsAction,
+            jumpRung: .newTab,
+            title: "",
+            lastPrompt: nil,
+            tty: tty,
+            terminalName: terminalName,
+            currentActivity: nil,
+            notificationMessage: nil,
+            pendingToolName: nil,
+            pendingToolInput: nil,
+            resumeCommand: nil
+        )
+    }
+
     // MARK: - Permissions preflight
 
     /// Checking must be able to say all four things without ever showing a dialog.

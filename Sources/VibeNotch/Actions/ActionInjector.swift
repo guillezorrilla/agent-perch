@@ -77,14 +77,16 @@ enum ActionInjectionDelivery: Equatable, Sendable {
 /// Two halves, exactly like `Jumper`: work out where the answer goes (slow, off the main actor),
 /// then type it (fast, necessarily on the main actor).
 ///
-/// `@unchecked Sendable` because that split is the invariant: `warpTabLocator` is touched only from
-/// `DiscoveryQueue`, `appleScript` and `warpFocuser` only from the main actor. Answering used to
-/// run whole on the main thread — including the ~30MB copy of Warp's sqlite that locating a tab
-/// costs — so every click on a card froze the entire app until it finished (#32).
+/// `@unchecked Sendable` because that split is the invariant: `warpTabLocator` and `resolver` are
+/// touched only from `DiscoveryQueue`, `appleScript` and `warpFocuser` only from the main actor.
+/// Answering used to run whole on the main thread — including the ~30MB copy of Warp's sqlite that
+/// locating a tab costs — so every click on a card froze the entire app until it finished (#32).
 struct ActionInjector: @unchecked Sendable {
     private let appleScript = AppleScriptRunner()
     private let warpTabLocator = WarpTabLocator()
     private let warpFocuser = WarpFocuser()
+    /// Only ever asked for `shellTTY(at:)`, and only from the discovery queue — see `inject` (#48).
+    private let resolver = TTYResolver()
 
     /// Nothing here logs session content, prompts or the answer itself — only which route was
     /// chosen and whether it landed. This path used to log nothing at all, which is why a real
@@ -103,12 +105,7 @@ struct ActionInjector: @unchecked Sendable {
         cwd: String? = nil,
         decision: ActionDecision
     ) -> ActionInjectionPlan? {
-        plan(
-            terminalName: terminalName,
-            tty: tty,
-            cwd: cwd,
-            key: decision == .allow ? .text("1") : .escape
-        )
+        plan(terminalName: terminalName, tty: tty, cwd: cwd, key: key(for: decision))
     }
 
     static func plan(
@@ -117,8 +114,53 @@ struct ActionInjector: @unchecked Sendable {
         cwd: String? = nil,
         digit: String
     ) -> ActionInjectionPlan? {
+        guard let key = key(forDigit: digit) else { return nil }
+        return plan(terminalName: terminalName, tty: tty, cwd: cwd, key: key)
+    }
+
+    private static func key(for decision: ActionDecision) -> InjectionKey {
+        decision == .allow ? .text("1") : .escape
+    }
+
+    /// `nil` for anything ⌘1-9 cannot be. Lifted out of `plan` so the session-level entry points
+    /// below reject the same digits without having to build a plan to find out (#48).
+    private static func key(forDigit digit: String) -> InjectionKey? {
         guard digit.count == 1, "123456789".contains(digit) else { return nil }
-        return plan(terminalName: terminalName, tty: tty, cwd: cwd, key: .text(digit))
+        return .text(digit)
+    }
+
+    /// Where an answer for a whole session goes — `plan` above, with jump's tty ladder behind it.
+    ///
+    /// A session can reach a permission prompt with no tty at all: Claude Code spawns its hooks
+    /// detached from the controlling terminal, so `ps -o tty= -p $$` inside the hook prints `??`
+    /// and `SessionStore` drops it. `Jumper.resolvePlan` has always recovered that case by finding
+    /// the shell still sitting at the session's cwd; answering had no equivalent, so those cards
+    /// jumped fine and reported "Couldn't answer" (#48) — the same asymmetry #42 fixed, one level
+    /// deeper.
+    ///
+    /// `recoverTTY` is handed the cwd ONLY when the session has no tty of its own and the terminal
+    /// is one `Jumper.canExactFocus` admits — reused, not restated, exactly as the `default` branch
+    /// of `plan` reuses it, so the two can never drift apart. That gate is safety, not just a saved
+    /// `lsof`: a cwd-derived tty is a WEAKER signal than a hook-reported one, naming only a shell
+    /// that happens to sit in the right directory. `canExactFocus` admits nil, iTerm and Terminal
+    /// and nothing else, so a recovered tty can only ever become `.iTerm`, `.terminal` or
+    /// `.ttyLadder` — never `.wezTerm`, where a sibling pane in the same directory would take the
+    /// keystroke, and never `.surface`, whose apps are answered by cwd and refused above long
+    /// before any tty is read (#42).
+    static func plan(
+        for session: AgentSession,
+        key: InjectionKey,
+        recoverTTY: (String) -> String?
+    ) -> ActionInjectionPlan? {
+        var tty = session.tty
+        if tty?.isEmpty ?? true,
+           !session.cwd.isEmpty,
+           Jumper.canExactFocus(session.terminalName?.lowercased()),
+           let recovered = recoverTTY(session.cwd), !recovered.isEmpty {
+            log.debug("answer tty recovered from cwd: \(recovered, privacy: .public)")
+            tty = recovered
+        }
+        return plan(terminalName: session.terminalName, tty: tty, cwd: session.cwd, key: key)
     }
 
     /// Where an answer goes, or `nil` when nowhere safe does.
@@ -180,22 +222,25 @@ struct ActionInjector: @unchecked Sendable {
     /// ~30MB database out of another app's container, and doing that behind a click is what froze
     /// the app (#32). The caller acknowledges the click first and awaits this afterwards.
     func inject(_ decision: ActionDecision, into session: AgentSession) async -> Bool {
-        guard let plan = Self.plan(
-            terminalName: session.terminalName,
-            tty: session.tty,
-            cwd: session.cwd,
-            decision: decision
-        ) else { return false }
-        return await inject(plan)
+        await inject(session, key: Self.key(for: decision))
     }
 
     func inject(_ digit: String, into session: AgentSession) async -> Bool {
-        guard let plan = Self.plan(
-            terminalName: session.terminalName,
-            tty: session.tty,
-            cwd: session.cwd,
-            digit: digit
-        ) else { return false }
+        guard let key = Self.key(forDigit: digit) else { return false }
+        return await inject(session, key: key)
+    }
+
+    /// The one place a session becomes a plan, and the only caller that may pay for jump's tty
+    /// ladder. `shellTTY(at:)` shells out to `lsof` — the slowest call either path makes — so it
+    /// runs on the discovery queue and never on the main actor (#32), which is exactly why the
+    /// recovery lives here and not inside the pure static `plan` every test drives. Once per
+    /// click, not once per session per refresh, so the cost buys a card that answers instead of
+    /// one that can only be jumped to (#48).
+    private func inject(_ session: AgentSession, key: InjectionKey) async -> Bool {
+        let plan = await DiscoveryQueue.run {
+            Self.plan(for: session, key: key, recoverTTY: { self.resolver.shellTTY(at: $0) })
+        }
+        guard let plan else { return false }
         return await inject(plan)
     }
 
