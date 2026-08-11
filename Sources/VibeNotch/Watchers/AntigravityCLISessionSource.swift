@@ -104,52 +104,27 @@ enum AntigravityCLIDiscovery {
     }
 }
 
-/// Mirrors `CodexLiveness` exactly: `agy` has no hooks either, so a stale-vs-fresh mtime alone
-/// cannot tell a session that's still running from one whose terminal was simply left open — only
-/// an actual live process match may promote past `.idle`.
-///
-/// A live process alone is still not enough (issue #31): a terminal parked at an idle `agy` prompt
-/// keeps its process running indefinitely, which is not evidence a turn is in flight. `.active`
-/// needs BOTH a live process AND a log write recent enough (`activeWriteWindow`) to look like
-/// ongoing activity; a live process next to a stale log degrades to `.idle`, same as no process.
-enum AntigravityCLILiveness {
-    /// See `CodexLiveness.activeWriteWindow` — same reasoning, same value, mirrored rather than
-    /// shared because the two sources have no other coupling worth introducing just for this.
-    static let activeWriteWindow: TimeInterval = 90.0
-
-    static func status(cwd: String, modifiedAt: Date, now: Date, processes: [ClaudeProcess]) -> SessionStatus? {
-        if hasLiveProcess(cwd: cwd, processes: processes),
-           now.timeIntervalSince(modifiedAt) < activeWriteWindow {
-            return .active
-        }
-        guard now.timeIntervalSince(modifiedAt) < 60 * 60.0 else { return nil }
-        return .idle
-    }
-
-    static func hasLiveProcess(cwd: String, processes: [ClaudeProcess]) -> Bool {
-        processes.contains {
-            TTYResolver.isAgentCLI("Antigravity", command: $0.command) && CanonicalPath.equal($0.cwd, cwd)
-        }
-    }
-}
-
-/// Discovers real `agy` (Antigravity's own CLI) sessions from
-/// `~/.gemini/antigravity-cli/{log,implicit}`.
+/// Discovers real `agy` (Antigravity's own CLI) sessions from the process table, using
+/// `~/.gemini/antigravity-cli/{log,implicit}` only to fill in what a process listing can't say.
 ///
 /// Unlike `AntigravitySessionSource`'s IDE workspaces — folders the app merely has open, with no
 /// per-agent state on disk at all — these run in a terminal exactly like a Claude or Codex CLI
-/// session: a real per-run log, a live process to focus by tty, `agy` itself to resume. So unlike
-/// the IDE-workspace source, this one is ALWAYS ON (#29) and lets the normal jump ladder resolve
-/// it (see `SessionStore.reconcile`, `Jumper.resolvePlan`).
+/// session: a live process to focus by tty, `agy` itself to resume. So unlike the IDE-workspace
+/// source, this one is ALWAYS ON (#29) and lets the normal jump ladder resolve it (see
+/// `SessionStore.reconcile`, `Jumper.resolvePlan`).
 ///
-/// - Membership: newest ~20 `log/cli-*.log` files by mtime (bounded, one directory listing). Each
-///   log's first `workspace <path>` line is its cwd (see `AntigravityCLILog`); a log with none is
-///   skipped outright — there is nothing to jump to.
-/// - Session id: the `implicit/<uuid>.pb` whose mtime is closest to the log's own, when one
-///   exists; otherwise a stable id derived from the log's own filename (its encoded timestamp is
-///   already unique per run).
-/// - Liveness: see `AntigravityCLILiveness` — mtime alone only gates `.idle` vs. hidden, matching
-///   every other hookless CLI source in this app.
+/// - Membership: live `agy` processes on a `ttys*`, one row per `(cwd, tty)` — see
+///   `LiveAgentScan`. Emphatically NOT the log files. `agy` writes SEVERAL `cli-*.log` files per
+///   run and leaves every one of them behind, some recording a workspace of literally `/`, so
+///   enumerating logs as sessions turned one real session into four rows — one of them titled `/`
+///   and two of them duplicates of each other (#33). Logs are a record of writes; only a process
+///   is a session.
+/// - Enrichment: the newest log whose `workspace` line (see `AntigravityCLILog`) names this
+///   session's own cwd supplies `lastActivity` and, via the `implicit/<uuid>.pb` closest to it by
+///   mtime, a session id. A session with no matching log still shows, dated by when its process
+///   started — a log is a nicety, never the evidence.
+/// - Liveness: see `HooklessLiveness` — a live session is never hidden by log age, and `.active`
+///   still requires a recent log write (#31).
 final class AntigravityCLISessionSource: AgentSessionSource {
     let agentName = "Antigravity"
 
@@ -157,6 +132,10 @@ final class AntigravityCLISessionSource: AgentSessionSource {
     /// `antigravity:`/`antigravity-cli:` prefix pair `SessionStore`'s dedup and
     /// `AgentSession.isAntigravityWorkspace` both key off.
     static let sessionIdPrefix = "antigravity-cli:"
+
+    /// What follows `sessionIdPrefix` for a session no log could be matched to: the process's own
+    /// `(tty, cwd)`, which is exactly what identifies it and stays stable across refreshes.
+    static let liveSessionIdInfix = "tty:"
 
     private let logDirectory: URL
     private let implicitDirectory: URL
@@ -179,42 +158,84 @@ final class AntigravityCLISessionSource: AgentSessionSource {
             .appendingPathComponent(".gemini/antigravity-cli", isDirectory: true)
     }
 
+    /// A `cli-*.log` reduced to the two things it can tell a session about itself.
+    private struct Log {
+        let url: URL
+        /// Canonical (see `CanonicalPath`), so a log's own recorded workspace and `lsof`'s
+        /// resolved cwd compare equal.
+        let workspace: String
+        let modifiedAt: Date
+    }
+
     func discover(now: Date) -> [DiscoveredSession] {
-        let logs = AntigravityCLIDiscovery.candidateLogFiles(logDirectory: logDirectory, fileManager: fileManager)
-        guard !logs.isEmpty else { return [] }
+        let liveProcesses = LiveAgentScan.liveSessions(in: processProvider())
+            .filter { $0.agentName == agentName }
+        // No live `agy` process means no `agy` session, however many logs are lying around: every
+        // one of them is a record of a run that has already ended.
+        guard !liveProcesses.isEmpty else { return [] }
 
-        let implicitFiles = AntigravityCLIDiscovery.implicitFiles(in: implicitDirectory, fileManager: fileManager)
-        let processes = processProvider()
+        let logs = candidateLogs()
+        let implicitFiles = logs.isEmpty
+            ? []
+            : AntigravityCLIDiscovery.implicitFiles(in: implicitDirectory, fileManager: fileManager)
 
-        let discovered: [DiscoveredSession] = logs.compactMap { log -> DiscoveredSession? in
-            guard let cwd = AntigravityCLILog.workspacePath(at: log) else { return nil }
-            let modifiedAt = AntigravityCLIDiscovery.modificationDate(of: log, fileManager: fileManager)
-            guard let status = AntigravityCLILiveness.status(
-                cwd: cwd, modifiedAt: modifiedAt, now: now, processes: processes
-            ) else { return nil }
+        var claimed: Set<URL> = []
+        let discovered: [DiscoveredSession] = liveProcesses.map { process in
+            let match = logs.first { !claimed.contains($0.url) && $0.workspace == process.cwd }
+            if let match { claimed.insert(match.url) }
 
-            let fallbackID = log.deletingPathExtension().lastPathComponent
-            let sessionId = Self.sessionIdPrefix
-                + (AntigravityCLIDiscovery.closestImplicitID(to: modifiedAt, in: implicitFiles) ?? fallbackID)
-            let basename = cwd.hasPrefix("/") ? URL(fileURLWithPath: cwd).lastPathComponent : cwd
-
+            let basename = URL(fileURLWithPath: process.cwd).lastPathComponent
             return DiscoveredSession(
-                sessionId: sessionId,
+                sessionId: Self.sessionIdPrefix + Self.sessionKey(for: match, implicitFiles: implicitFiles, process: process),
                 agentName: agentName,
-                cwd: cwd,
+                cwd: process.cwd,
                 title: SessionTitle.truncate(basename, max: 60),
-                lastActivity: modifiedAt,
-                status: status,
+                lastActivity: match?.modifiedAt ?? process.startedAt ?? now,
+                status: HooklessLiveness.liveStatus(lastWriteAt: match?.modifiedAt, now: now),
                 // The cwd `cd` is already handled by `Jumper`'s shared "new tab" command
                 // template — this only needs to name the launch itself, exactly like Codex's
                 // `codex resume <id>` does for its own resumeCommand.
                 resumeCommand: "agy",
                 sessionFileURL: nil,
                 // No hooks: `.active` here only ever means "live process + recent write" (see
-                // `AntigravityCLILiveness`), never a verified in-flight turn (issue #31).
-                supportsLiveStatus: false
+                // `HooklessLiveness`), never a verified in-flight turn (issue #31).
+                supportsLiveStatus: false,
+                tty: process.tty
             )
         }
         return Array(discovered.prefix(10))
+    }
+
+    /// The newest ~20 logs that name a real workspace, newest first.
+    ///
+    /// A workspace of literally `/` is dropped outright: `agy` records it for runs with no project
+    /// context at all, and it can only ever produce a row titled `/` that jumps to the filesystem
+    /// root (#33). One with no `workspace` line at all is dropped for the same reason it always
+    /// was — it says nothing about which session it belongs to.
+    private func candidateLogs() -> [Log] {
+        AntigravityCLIDiscovery
+            .candidateLogFiles(logDirectory: logDirectory, fileManager: fileManager)
+            .compactMap { url in
+                guard let workspace = AntigravityCLILog.workspacePath(at: url) else { return nil }
+                let canonical = CanonicalPath.canonical(workspace)
+                guard canonical != "/" else { return nil }
+                return Log(
+                    url: url,
+                    workspace: canonical,
+                    modifiedAt: AntigravityCLIDiscovery.modificationDate(of: url, fileManager: fileManager)
+                )
+            }
+    }
+
+    /// A matched log's `implicit/<uuid>.pb` (closest by mtime), else the log's own filename — its
+    /// encoded timestamp is already unique per run — else the process's own `(tty, cwd)`.
+    private static func sessionKey(
+        for log: Log?,
+        implicitFiles: [(id: String, modifiedAt: Date)],
+        process: LiveAgentProcess
+    ) -> String {
+        guard let log else { return "\(liveSessionIdInfix)\(process.tty):\(process.cwd)" }
+        return AntigravityCLIDiscovery.closestImplicitID(to: log.modifiedAt, in: implicitFiles)
+            ?? log.url.deletingPathExtension().lastPathComponent
     }
 }

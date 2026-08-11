@@ -5,6 +5,11 @@ struct ClaudeProcess: Equatable, Sendable {
     let command: String
     let cwd: String
     let tty: String?
+    /// When the process was launched, derived from the same batched `ps` run that reports its tty
+    /// (see `startedAtByPID`). The only honest `lastActivity` a live session with no transcript to
+    /// match has (#33). `var` with a default only so the synthesized memberwise init keeps working
+    /// for the many call sites that have no reason to care; never mutated after init.
+    var startedAt: Date? = nil
 }
 
 struct TTYResolver {
@@ -50,11 +55,16 @@ struct TTYResolver {
                 keepingPartialOutput: true
             ) ?? ""
         )
-        let ttys = Self.ttysByPID(inPSOutput: Self.output(
+        // One `ps` run, two answers: the tty every jump keys off, and the start time a live
+        // session with no transcript to match dates itself by (#33) — an extra output column
+        // costs nothing next to a second subprocess spawn.
+        let psOutput = Self.output(
             "/bin/ps",
-            ["-o", "pid=,tty=", "-p", pids],
+            ["-o", "pid=,tty=,etime=", "-p", pids],
             keepingPartialOutput: true
-        ) ?? "")
+        ) ?? ""
+        let ttys = Self.ttysByPID(inPSOutput: psOutput)
+        let startTimes = Self.startedAtByPID(inPSOutput: psOutput, now: Date())
 
         return candidates.compactMap { candidate in
             guard let cwd = cwds[candidate.pid] else { return nil }
@@ -62,7 +72,8 @@ struct TTYResolver {
                 pid: candidate.pid,
                 command: candidate.command,
                 cwd: cwd,
-                tty: ttys[candidate.pid]
+                tty: ttys[candidate.pid],
+                startedAt: startTimes[candidate.pid]
             )
         }
     }
@@ -177,6 +188,39 @@ struct TTYResolver {
             result[pid] = tty.hasPrefix("/dev/") ? String(tty.dropFirst(5)) : tty
         }
         return result
+    }
+
+    /// pid -> start date, from the `etime` column of the same `ps -o pid=,tty=,etime=` run.
+    ///
+    /// Elapsed time rather than `lstart`: `etime`'s `[[DD-]HH:]MM:SS` is a fixed, locale- and
+    /// timezone-independent shape, where `lstart` prints a localized date string this would have
+    /// to parse back. A line whose elapsed field is missing or unparsable simply contributes
+    /// nothing, exactly like a missing tty does.
+    static func startedAtByPID(inPSOutput listing: String, now: Date) -> [Int32: Date] {
+        var result: [Int32: Date] = [:]
+        for line in listing.split(whereSeparator: \.isNewline) {
+            let fields = line.split(whereSeparator: \.isWhitespace)
+            guard fields.count >= 3, let pid = Int32(fields[0]),
+                  let elapsed = elapsedSeconds(String(fields[2])) else { continue }
+            result[pid] = now.addingTimeInterval(-elapsed)
+        }
+        return result
+    }
+
+    /// `MM:SS`, `HH:MM:SS` or `DD-HH:MM:SS` — the three shapes `ps`'s `etime` prints — as seconds.
+    static func elapsedSeconds(_ etime: String) -> TimeInterval? {
+        let halves = etime.split(separator: "-", maxSplits: 1)
+        guard let clock = halves.last, halves.count <= 2 else { return nil }
+        var days: TimeInterval = 0
+        if halves.count == 2 {
+            guard let parsed = TimeInterval(halves[0]) else { return nil }
+            days = parsed
+        }
+        let units = clock.split(separator: ":").map { TimeInterval($0) }
+        guard units.count == 2 || units.count == 3, !units.contains(where: { $0 == nil }) else { return nil }
+        let values = units.compactMap { $0 }
+        let hours = values.count == 3 ? values[0] : 0
+        return ((days * 24.0 + hours) * 60.0 + values[values.count - 2]) * 60.0 + values[values.count - 1]
     }
 
     /// Walks `lsof -Fpn` output, handing each (pid, cwd) pair to `visit`; `visit` returns whether

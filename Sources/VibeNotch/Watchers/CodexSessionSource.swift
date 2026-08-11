@@ -246,8 +246,8 @@ enum CodexLiveness {
     /// within this window is the closest thing to a real "is a turn in flight" signal a hookless
     /// CLI can offer. Long enough to absorb an ordinary pause between tool calls, short enough
     /// that an idle TUI's live-but-silent process stops counting as active within a couple of
-    /// minutes.
-    static let activeWriteWindow: TimeInterval = 90.0
+    /// minutes. Shared with every other hookless agent — see `HooklessLiveness`.
+    static let activeWriteWindow: TimeInterval = HooklessLiveness.activeWriteWindow
 
     static func status(
         sessionId: String,
@@ -278,22 +278,35 @@ enum CodexLiveness {
     }
 }
 
-/// Discovers OpenAI Codex CLI sessions from `$CODEX_HOME` (defaults to `~/.codex`).
+/// Discovers OpenAI Codex CLI sessions from the process table first and `$CODEX_HOME` (defaults
+/// to `~/.codex`) second.
 ///
-/// - Membership: enumerate rollout files directly (bounded, see `CodexRolloutDiscovery`), not
-///   `session_index.jsonl` — that index only records sessions Codex spawned on someone else's
-///   behalf, never a real interactive one (issue #24), so treating it as the source of truth
-///   both hid the user's own sessions and surfaced ones that were never theirs. Each
-///   candidate's first-line `session_meta` is classified by `CodexSessionOrigin.classify`; only
-///   `.interactive` sessions show by default, and `showSubAgentSessions` additionally reveals
-///   `.agentSpawned`/`.subagent` ones.
-/// - Liveness: `.active` requires an actual live process match (`CodexLiveness`); mtime alone
-///   only gates `.idle` vs. hidden, mirroring the Claude thresholds via the shared
-///   `SessionStatus.at`.
+/// - Membership, first pass: every live `codex` process on a `ttys*` (see `LiveAgentScan`). A
+///   session the user is sitting in exists whether or not anything has been written to its
+///   rollout lately — keying membership off the rollout's mtime is what hid a real session on
+///   `ttys025` whose rollout happened to be 71 minutes old (#33).
+/// - Membership, second pass: rollout files with no live process behind them (bounded, see
+///   `CodexRolloutDiscovery`) — recently-finished work, still worth a row for an hour. Never
+///   `session_index.jsonl`: that index only records sessions Codex spawned on someone else's
+///   behalf, never a real interactive one (issue #24). Each candidate's first-line `session_meta`
+///   is classified by `CodexSessionOrigin.classify`; only `.interactive` sessions show by default,
+///   and `showSubAgentSessions` additionally reveals `.agentSpawned`/`.subagent` ones.
+/// - Enrichment: a live session is matched to the newest visible rollout at its own cwd (skipping
+///   any that a `codex resume <id>` command line contradicts), which supplies its session id,
+///   title and `lastActivity`. Unmatched is normal, not an error — the session still shows, titled
+///   by its cwd's basename and dated by when its process started.
+/// - Liveness: `HooklessLiveness` for a live session (never hidden; `.active` still needs a recent
+///   rollout write, per #31), `CodexLiveness` for a rollout-only one (mtime gates `.idle` vs.
+///   hidden).
 ///
 /// `session_index.jsonl` is kept around ONLY as an optional `thread_name` source for titles.
 final class CodexSessionSource: AgentSessionSource {
     let agentName = "Codex"
+
+    /// The `sessionId` prefix for a live session no rollout could be matched to — the process's
+    /// own `(tty, cwd)`, which is exactly what identifies it and stays stable across refreshes.
+    static let liveSessionIdPrefix = "codex-live:"
+
     let codexHome: URL
     private let sessionsRoot: URL
     private let fileManager: FileManager
@@ -322,51 +335,108 @@ final class CodexSessionSource: AgentSessionSource {
         return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex", isDirectory: true)
     }
 
-    func discover(now: Date) -> [DiscoveredSession] {
-        let files = CodexRolloutDiscovery.candidateFiles(
-            sessionsRoot: sessionsRoot,
-            now: now,
-            fileManager: fileManager
-        )
-        guard !files.isEmpty else { return [] }
+    /// A rollout file reduced to what discovery needs of it, so the file is parsed once whether
+    /// it ends up enriching a live session or standing in for a finished one.
+    private struct Transcript {
+        let meta: CodexRolloutMeta.SessionMeta
+        let canonicalCwd: String
+        let modifiedAt: Date
+    }
 
-        let includeSubAgentSessions = showSubAgentSessions()
+    func discover(now: Date) -> [DiscoveredSession] {
+        let processes = processProvider()
+        let liveProcesses = LiveAgentScan.liveSessions(in: processes).filter { $0.agentName == agentName }
+        let transcripts = visibleTranscripts(now: now, includeSubAgentSessions: showSubAgentSessions())
+        guard !liveProcesses.isEmpty || !transcripts.isEmpty else { return [] }
+
         let threadNames = CodexSessionIndex.threadNamesByID(
             at: codexHome.appendingPathComponent("session_index.jsonl")
         )
-        let processes = processProvider()
 
-        var discovered: [DiscoveredSession] = []
-        for file in files {
-            guard let meta = CodexRolloutMeta.firstLineSessionMeta(at: file),
-                  let values = try? file.resourceValues(forKeys: [.contentModificationDateKey]),
-                  let modifiedAt = values.contentModificationDate else { continue }
-
-            let origin = CodexSessionOrigin.classify(originator: meta.originator, source: meta.source)
-            guard origin == .interactive || includeSubAgentSessions else { continue }
-
-            guard let status = CodexLiveness.status(
-                sessionId: meta.sessionId,
-                cwd: meta.cwd,
-                modifiedAt: modifiedAt,
-                now: now,
-                processes: processes
-            ) else { continue }
-
-            discovered.append(DiscoveredSession(
-                sessionId: meta.sessionId,
+        // Live sessions first, and they claim their transcripts, so the file pass below can never
+        // emit a second row for a session already on screen.
+        var claimed: Set<String> = []
+        let live: [DiscoveredSession] = liveProcesses.map { process in
+            let match = transcripts.first {
+                !claimed.contains($0.meta.sessionId)
+                    && $0.canonicalCwd == process.cwd
+                    // A `codex resume <id>` launch names the one rollout it is actually replaying;
+                    // every other rollout at this cwd is somebody else's session.
+                    && !JumpTarget.namesAnotherSession(sessionId: $0.meta.sessionId, command: process.command)
+            }
+            if let match { claimed.insert(match.meta.sessionId) }
+            return DiscoveredSession(
+                sessionId: match?.meta.sessionId ?? Self.liveSessionId(tty: process.tty, cwd: process.cwd),
                 agentName: agentName,
-                cwd: meta.cwd,
-                title: SessionTitle.resolveCodex(threadName: threadNames[meta.sessionId], cwd: meta.cwd),
-                lastActivity: modifiedAt,
-                status: status,
-                resumeCommand: Jumper.codexResumeCommand(sessionId: meta.sessionId),
+                cwd: match?.meta.cwd ?? process.cwd,
+                title: SessionTitle.resolveCodex(
+                    threadName: match.flatMap { threadNames[$0.meta.sessionId] },
+                    cwd: process.cwd
+                ),
+                lastActivity: match?.modifiedAt ?? process.startedAt ?? now,
+                status: HooklessLiveness.liveStatus(lastWriteAt: match?.modifiedAt, now: now),
+                // Without a rollout there is no id to resume — a bare relaunch at the cwd is the
+                // most this can honestly promise, and the jump ladder prefers the live tty anyway.
+                resumeCommand: match.map { Jumper.codexResumeCommand(sessionId: $0.meta.sessionId) } ?? "codex",
                 sessionFileURL: nil,
                 // No hooks: `.active` here only ever means "live process + recent write" (see
-                // `CodexLiveness`), never a verified in-flight turn (issue #31).
-                supportsLiveStatus: false
-            ))
+                // `HooklessLiveness`), never a verified in-flight turn (issue #31).
+                supportsLiveStatus: false,
+                tty: process.tty
+            )
         }
-        return Array(discovered.prefix(10))
+
+        let finished: [DiscoveredSession] = transcripts.compactMap { transcript in
+            guard !claimed.contains(transcript.meta.sessionId),
+                  let status = CodexLiveness.status(
+                      sessionId: transcript.meta.sessionId,
+                      cwd: transcript.meta.cwd,
+                      modifiedAt: transcript.modifiedAt,
+                      now: now,
+                      processes: processes
+                  ) else { return nil }
+
+            return DiscoveredSession(
+                sessionId: transcript.meta.sessionId,
+                agentName: agentName,
+                cwd: transcript.meta.cwd,
+                title: SessionTitle.resolveCodex(
+                    threadName: threadNames[transcript.meta.sessionId],
+                    cwd: transcript.meta.cwd
+                ),
+                lastActivity: transcript.modifiedAt,
+                status: status,
+                resumeCommand: Jumper.codexResumeCommand(sessionId: transcript.meta.sessionId),
+                sessionFileURL: nil,
+                supportsLiveStatus: false
+            )
+        }
+
+        return Array((live + finished).prefix(10))
+    }
+
+    /// The bounded rollout candidates that this user is allowed to see, newest first — parsed
+    /// once, whether they end up enriching a live session or standing in for a finished one.
+    private func visibleTranscripts(now: Date, includeSubAgentSessions: Bool) -> [Transcript] {
+        CodexRolloutDiscovery.candidateFiles(
+            sessionsRoot: sessionsRoot,
+            now: now,
+            fileManager: fileManager
+        ).compactMap { file in
+            guard let meta = CodexRolloutMeta.firstLineSessionMeta(at: file),
+                  let modifiedAt = try? file.resourceValues(forKeys: [.contentModificationDateKey])
+                      .contentModificationDate else { return nil }
+            let origin = CodexSessionOrigin.classify(originator: meta.originator, source: meta.source)
+            guard origin == .interactive || includeSubAgentSessions else { return nil }
+            return Transcript(
+                meta: meta,
+                canonicalCwd: CanonicalPath.canonical(meta.cwd),
+                modifiedAt: modifiedAt
+            )
+        }
+    }
+
+    private static func liveSessionId(tty: String, cwd: String) -> String {
+        "\(liveSessionIdPrefix)\(tty):\(cwd)"
     }
 }

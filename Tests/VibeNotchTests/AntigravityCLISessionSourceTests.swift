@@ -180,79 +180,64 @@ final class AntigravityCLIDiscoveryTests: XCTestCase {
     }
 }
 
-/// Mirrors `CodexLivenessTests`: `agy` has no hooks either, so only a live matching process may
-/// promote past `.idle`.
-final class AntigravityCLILivenessTests: XCTestCase {
-    func testLiveAgyProcessAtCwdIsLive() {
-        let processes = [ClaudeProcess(pid: 1, command: "/usr/local/bin/agy", cwd: "/repo", tty: nil)]
-        XCTAssertTrue(AntigravityCLILiveness.hasLiveProcess(cwd: "/repo", processes: processes))
-    }
+/// The visibility rule every hookless agent now shares (#33): a live process is what makes a
+/// session exist, a recent transcript write is what makes it look busy, and the two questions are
+/// never confused for each other again.
+final class HooklessLivenessTests: XCTestCase {
+    private let now = Date(timeIntervalSince1970: 10_000)
 
-    func testNoProcessAtCwdIsNotLive() {
-        XCTAssertFalse(AntigravityCLILiveness.hasLiveProcess(cwd: "/repo", processes: []))
-        let elsewhere = [ClaudeProcess(pid: 1, command: "/usr/local/bin/agy", cwd: "/other", tty: nil)]
-        XCTAssertFalse(AntigravityCLILiveness.hasLiveProcess(cwd: "/repo", processes: elsewhere))
-    }
-
-    func testAClaudeProcessAtTheSameCwdDoesNotCountAsLive() {
-        let processes = [ClaudeProcess(pid: 1, command: "/usr/local/bin/claude", cwd: "/repo", tty: nil)]
-        XCTAssertFalse(AntigravityCLILiveness.hasLiveProcess(cwd: "/repo", processes: processes))
-    }
-
-    /// Issue #31: a live process alone used to be enough for `.active` no matter how stale the
-    /// log was — exactly the bug where an `agy` terminal parked at an idle prompt (process still
-    /// running, nothing written in almost an hour) showed as "Working…". A live process next to
-    /// a write older than `activeWriteWindow` must now degrade to `.idle`, same as no process.
-    func testLiveProcessWithAWriteOlderThanTheActiveWriteWindowDegradesToIdle() {
-        let now = Date(timeIntervalSince1970: 10_000)
-        let processes = [ClaudeProcess(pid: 1, command: "/usr/local/bin/agy", cwd: "/repo", tty: nil)]
+    /// Issue #31, preserved: a live process alone was once enough for `.active` no matter how
+    /// stale the transcript was — exactly the bug where a terminal parked at an idle prompt
+    /// (process running, nothing written in almost an hour) showed as "Working…".
+    func testLiveProcessWithAWriteOlderThanTheActiveWriteWindowIsIdle() {
         XCTAssertEqual(
-            AntigravityCLILiveness.status(
-                cwd: "/repo", modifiedAt: now.addingTimeInterval(-5 * 60.0), now: now, processes: processes
-            ),
+            HooklessLiveness.liveStatus(lastWriteAt: now.addingTimeInterval(-5 * 60.0), now: now),
             .idle
         )
     }
 
-    /// The other half of #31: a live process AND a write within `activeWriteWindow` together are
-    /// still enough for `.active` — the fix narrows what counts as evidence, it doesn't remove
-    /// `.active` altogether.
+    /// The other half of #31: a recent write next to a live process is still `.active` — the rule
+    /// narrows what counts as evidence, it doesn't remove `.active` altogether.
     func testLiveProcessWithARecentWriteIsActive() {
-        let now = Date(timeIntervalSince1970: 10_000)
-        let processes = [ClaudeProcess(pid: 1, command: "/usr/local/bin/agy", cwd: "/repo", tty: nil)]
-        XCTAssertEqual(
-            AntigravityCLILiveness.status(
-                cwd: "/repo", modifiedAt: now.addingTimeInterval(-10), now: now, processes: processes
-            ),
-            .active
-        )
+        XCTAssertEqual(HooklessLiveness.liveStatus(lastWriteAt: now.addingTimeInterval(-10), now: now), .active)
     }
 
-    func testStatusDegradesToIdleWithoutALiveProcessEvenWhenFresh() {
-        let now = Date(timeIntervalSince1970: 10_000)
+    /// Issue #33's core rule: transcript age can no longer HIDE a session that has a live process.
+    /// The 71-minute-old rollout on this machine's real `ttys025` Codex session is well past every
+    /// freshness threshold in the app and must still come back visible, merely `.idle`.
+    func testALiveSessionIsNeverHiddenByTranscriptAgeHoweverStale() {
         XCTAssertEqual(
-            AntigravityCLILiveness.status(cwd: "/repo", modifiedAt: now, now: now, processes: []),
+            HooklessLiveness.liveStatus(lastWriteAt: now.addingTimeInterval(-71 * 60.0), now: now),
+            .idle
+        )
+        XCTAssertEqual(
+            HooklessLiveness.liveStatus(lastWriteAt: now.addingTimeInterval(-30 * 24 * 60 * 60.0), now: now),
             .idle
         )
     }
 
-    func testStatusIsHiddenPastTheThresholdWithoutALiveProcess() {
-        let now = Date(timeIntervalSince1970: 10_000)
-        XCTAssertNil(
-            AntigravityCLILiveness.status(cwd: "/repo", modifiedAt: now.addingTimeInterval(-3_600), now: now, processes: [])
-        )
+    /// No transcript matched at all is an ordinary quiet session, not a reason to hide one.
+    func testALiveSessionWithNoTranscriptAtAllIsIdleRatherThanHidden() {
+        XCTAssertEqual(HooklessLiveness.liveStatus(lastWriteAt: nil, now: now), .idle)
+    }
+
+    func testActiveWriteWindowIsSharedWithCodex() {
+        XCTAssertEqual(HooklessLiveness.activeWriteWindow, 90.0)
+        XCTAssertEqual(CodexLiveness.activeWriteWindow, HooklessLiveness.activeWriteWindow)
     }
 }
 
 final class AntigravityCLISessionSourceTests: XCTestCase {
     private let fixedNow = Date(timeIntervalSince1970: 1_786_000_000)
 
-    func testDiscoversASessionFromALogWithAWorkspaceLine() throws {
+    func testDiscoversTheLiveProcessAndEnrichesItFromItsOwnLog() throws {
         let home = try makeTemporaryDirectory()
-        try makeLog(in: home, name: "cli-20260808_160031.log", workspace: "/Users/me/project", ageSeconds: 60)
+        try makeLog(in: home, name: "cli-20260808_160031.log", workspace: "/Users/me/project", ageSeconds: 5 * 60.0)
 
-        let discovered = AntigravityCLISessionSource(antigravityCLIHome: home, processProvider: { [] })
-            .discover(now: fixedNow)
+        let discovered = AntigravityCLISessionSource(
+            antigravityCLIHome: home,
+            processProvider: { [liveAgy(cwd: "/Users/me/project")] }
+        ).discover(now: fixedNow)
 
         let session = try XCTUnwrap(discovered.first)
         XCTAssertEqual(session.agentName, "Antigravity")
@@ -260,21 +245,64 @@ final class AntigravityCLISessionSourceTests: XCTestCase {
         // A REAL session — unlike the IDE-workspace source, the title is a plain basename, no
         // "workspace" qualifier.
         XCTAssertEqual(session.title, "project")
+        // The log supplied `lastActivity`; it is five minutes stale, so #31 caps this at idle.
+        XCTAssertEqual(session.lastActivity, fixedNow.addingTimeInterval(-5 * 60.0))
         XCTAssertEqual(session.status, .idle)
         XCTAssertEqual(session.resumeCommand, "agy")
+        XCTAssertEqual(session.tty, "ttys002")
         XCTAssertNil(session.sessionFileURL)
         // `agy` has no hooks — `.active` can never mean more than "live process + recent write"
         // (issue #31), so `SessionCardView` must never show "Working…" for it.
         XCTAssertFalse(session.supportsLiveStatus)
     }
 
-    func testLogWithNoWorkspaceLineIsSkippedEntirely() throws {
+    /// The heart of #33: logs are a record of writes, not a list of sessions. `agy` writes several
+    /// per run and leaves every one behind, so the ONLY thing that may create a row is a live
+    /// process — however fresh, however numerous, however well-formed the logs are.
+    func testLogsWithNoLiveProcessYieldNoSessionsAtAll() throws {
+        let home = try makeTemporaryDirectory()
+        try makeLog(in: home, name: "cli-a.log", workspace: "/Users/me/project", ageSeconds: 60)
+        try makeLog(in: home, name: "cli-b.log", workspace: "/Users/me/other", ageSeconds: 5)
+
+        XCTAssertTrue(
+            AntigravityCLISessionSource(antigravityCLIHome: home, processProvider: { [] })
+                .discover(now: fixedNow).isEmpty
+        )
+    }
+
+    /// A live process with no log to match it is still a session — the log is enrichment, never
+    /// the evidence. Its title falls back to the cwd basename and its date to the process's own
+    /// start time.
+    func testLiveProcessWithNoMatchingLogIsStillASessionDatedByItsStartTime() throws {
+        let home = try makeTemporaryDirectory()
+        try makeLog(in: home, name: "cli-elsewhere.log", workspace: "/Users/me/other", ageSeconds: 30)
+        let started = fixedNow.addingTimeInterval(-3 * 60 * 60.0)
+
+        let discovered = AntigravityCLISessionSource(
+            antigravityCLIHome: home,
+            processProvider: { [liveAgy(cwd: "/Users/me/project", startedAt: started)] }
+        ).discover(now: fixedNow)
+
+        let session = try XCTUnwrap(discovered.first)
+        XCTAssertEqual(session.title, "project")
+        XCTAssertEqual(session.cwd, "/Users/me/project")
+        XCTAssertEqual(session.lastActivity, started)
+        XCTAssertEqual(session.status, .idle)
+        XCTAssertEqual(session.sessionId, "antigravity-cli:tty:ttys002:/Users/me/project")
+    }
+
+    func testLogWithNoWorkspaceLineCannotEnrichAnything() throws {
         let home = try makeTemporaryDirectory()
         try makeLog(in: home, name: "cli-20260808_160031.log", workspace: nil, ageSeconds: 60, extraLines: ["nothing useful here"])
+        try makeImplicit(in: home, uuid: "some-uuid", ageSeconds: 60)
 
-        let discovered = AntigravityCLISessionSource(antigravityCLIHome: home, processProvider: { [] })
-            .discover(now: fixedNow)
-        XCTAssertTrue(discovered.isEmpty)
+        let discovered = AntigravityCLISessionSource(
+            antigravityCLIHome: home,
+            processProvider: { [liveAgy(cwd: "/Users/me/project")] }
+        ).discover(now: fixedNow)
+
+        // The session still shows (the process proves it), but the unreadable log gave it nothing.
+        XCTAssertEqual(discovered.map(\.sessionId), ["antigravity-cli:tty:ttys002:/Users/me/project"])
     }
 
     func testSessionIdPrefersTheImplicitFileClosestByMtime() throws {
@@ -283,8 +311,10 @@ final class AntigravityCLISessionSourceTests: XCTestCase {
         try makeImplicit(in: home, uuid: "far-uuid", ageSeconds: 600)
         try makeImplicit(in: home, uuid: "close-uuid", ageSeconds: 61)
 
-        let discovered = AntigravityCLISessionSource(antigravityCLIHome: home, processProvider: { [] })
-            .discover(now: fixedNow)
+        let discovered = AntigravityCLISessionSource(
+            antigravityCLIHome: home,
+            processProvider: { [liveAgy(cwd: "/Users/me/project")] }
+        ).discover(now: fixedNow)
         XCTAssertEqual(discovered.first?.sessionId, "antigravity-cli:close-uuid")
     }
 
@@ -292,54 +322,128 @@ final class AntigravityCLISessionSourceTests: XCTestCase {
         let home = try makeTemporaryDirectory()
         try makeLog(in: home, name: "cli-20260808_160031.log", workspace: "/Users/me/project", ageSeconds: 60)
 
-        let discovered = AntigravityCLISessionSource(antigravityCLIHome: home, processProvider: { [] })
-            .discover(now: fixedNow)
+        let discovered = AntigravityCLISessionSource(
+            antigravityCLIHome: home,
+            processProvider: { [liveAgy(cwd: "/Users/me/project")] }
+        ).discover(now: fixedNow)
         XCTAssertEqual(discovered.first?.sessionId, "antigravity-cli:cli-20260808_160031")
     }
 
-    func testHiddenThresholdDropsAStaleSessionWithoutALiveProcess() throws {
+    /// #33: a live session is never hidden by its log's age. The old rule dropped anything past 60
+    /// minutes, which is exactly how a terminal the user was sitting in disappeared from the list.
+    func testALiveSessionSurvivesALogFarPastTheOldHiddenThreshold() throws {
         let home = try makeTemporaryDirectory()
-        try makeLog(in: home, name: "cli-stale.log", workspace: "/Users/me/project", ageSeconds: 61 * 60.0)
+        try makeLog(in: home, name: "cli-stale.log", workspace: "/Users/me/project", ageSeconds: 116 * 60.0)
 
-        let discovered = AntigravityCLISessionSource(antigravityCLIHome: home, processProvider: { [] })
-            .discover(now: fixedNow)
-        XCTAssertTrue(discovered.isEmpty)
+        let discovered = AntigravityCLISessionSource(
+            antigravityCLIHome: home,
+            processProvider: { [liveAgy(cwd: "/Users/me/project")] }
+        ).discover(now: fixedNow)
+        XCTAssertEqual(discovered.map(\.status), [.idle])
     }
 
-    /// The full #31 regression: a live `agy` process sitting at the session's cwd, but a log
-    /// that hasn't been written to in minutes (a terminal parked at an idle prompt) — the process
-    /// alone must not promote this to `.active`.
+    /// The full #31 regression, still in force: a live process whose log hasn't been written to in
+    /// minutes (a terminal parked at an idle prompt) must not read as `.active`.
     func testLiveProcessWithAStaleLogDegradesToIdleAtTheSourceLevel() throws {
         let home = try makeTemporaryDirectory()
         try makeLog(in: home, name: "cli-20260808_160031.log", workspace: "/Users/me/project", ageSeconds: 5 * 60.0)
-        let liveProcess = ClaudeProcess(pid: 1, command: "/usr/local/bin/agy", cwd: "/Users/me/project", tty: nil)
 
-        let discovered = AntigravityCLISessionSource(antigravityCLIHome: home, processProvider: { [liveProcess] })
-            .discover(now: fixedNow)
+        let discovered = AntigravityCLISessionSource(
+            antigravityCLIHome: home,
+            processProvider: { [liveAgy(cwd: "/Users/me/project")] }
+        ).discover(now: fixedNow)
         XCTAssertEqual(discovered.first?.status, .idle)
     }
 
-    func testActiveRequiresALiveMatchingProcess() throws {
+    func testActiveNeedsBothALiveProcessAndARecentLogWrite() throws {
         let home = try makeTemporaryDirectory()
-        try makeLog(in: home, name: "cli-20260808_160031.log", workspace: "/Users/me/project", ageSeconds: 60)
-        let liveProcess = ClaudeProcess(pid: 1, command: "/usr/local/bin/agy", cwd: "/Users/me/project", tty: nil)
+        try makeLog(in: home, name: "cli-20260808_160031.log", workspace: "/Users/me/project", ageSeconds: 10)
 
-        let withProcess = AntigravityCLISessionSource(antigravityCLIHome: home, processProvider: { [liveProcess] })
-            .discover(now: fixedNow)
-        XCTAssertEqual(withProcess.first?.status, .active)
-
-        let withoutProcess = AntigravityCLISessionSource(antigravityCLIHome: home, processProvider: { [] })
-            .discover(now: fixedNow)
-        XCTAssertEqual(withoutProcess.first?.status, .idle)
+        let discovered = AntigravityCLISessionSource(
+            antigravityCLIHome: home,
+            processProvider: { [liveAgy(cwd: "/Users/me/project")] }
+        ).discover(now: fixedNow)
+        XCTAssertEqual(discovered.first?.status, .active)
     }
 
-    func testMissingLogDirectoryYieldsNoSessions() {
-        XCTAssertTrue(
-            AntigravityCLISessionSource(
-                antigravityCLIHome: URL(fileURLWithPath: "/nonexistent/antigravity-cli"),
-                processProvider: { [] }
-            ).discover(now: fixedNow).isEmpty
-        )
+    /// The exact live-machine shape from #33: eight logs, two of them recording a workspace of
+    /// literally `/` and four more all naming `/Users/gzorrilla`, next to ONE real `agy` process
+    /// at `vibe-notch`. The app used to draw four Antigravity rows from this — one titled `/`,
+    /// two duplicates of each other. There is one session, so there is one row.
+    func testTheEightLogRealWorldShapeYieldsExactlyOneSession() throws {
+        let home = try makeTemporaryDirectory()
+        let vibeNotch = "/Users/gzorrilla/Developer/personal/vibe-notch"
+        try makeLog(in: home, name: "cli-20260810_0920.log", workspace: "/Users/gzorrilla", ageSeconds: 3 * 60.0)
+        try makeLog(in: home, name: "cli-20260810_0918.log", workspace: vibeNotch, ageSeconds: 5 * 60.0)
+        try makeLog(in: home, name: "cli-20260810_0827.log", workspace: "/", ageSeconds: 56 * 60.0)
+        try makeLog(in: home, name: "cli-20260810_0826.log", workspace: "/", ageSeconds: 56.5 * 60.0)
+        try makeLog(in: home, name: "cli-20260810_0811.log", workspace: "/Users/gzorrilla", ageSeconds: 72 * 60.0)
+        try makeLog(in: home, name: "cli-20260810_0800.log", workspace: "/Users/gzorrilla", ageSeconds: 83 * 60.0)
+        try makeLog(in: home, name: "cli-20260810_0743.log", workspace: "/Users/gzorrilla", ageSeconds: 100 * 60.0)
+        try makeLog(in: home, name: "cli-20260810_0727.log", workspace: "/Users/gzorrilla", ageSeconds: 116 * 60.0)
+
+        let discovered = AntigravityCLISessionSource(
+            antigravityCLIHome: home,
+            processProvider: { [liveAgy(cwd: vibeNotch)] }
+        ).discover(now: fixedNow)
+
+        XCTAssertEqual(discovered.count, 1)
+        XCTAssertEqual(discovered.first?.title, "vibe-notch")
+        XCTAssertEqual(discovered.first?.cwd, vibeNotch)
+        XCTAssertEqual(discovered.first?.tty, "ttys002")
+        // Enriched by the `vibe-notch` log, not by any of the `/Users/gzorrilla` ones.
+        XCTAssertEqual(discovered.first?.lastActivity, fixedNow.addingTimeInterval(-5 * 60.0))
+        XCTAssertFalse(discovered.contains { $0.cwd == "/" })
+    }
+
+    /// Two terminals really can run `agy` in the same folder — the tty is what tells them apart,
+    /// and each claims its own log rather than both enriching from the newest one.
+    func testTwoTerminalsInOneFolderAreTwoSessionsOnePerTTY() throws {
+        let home = try makeTemporaryDirectory()
+        try makeLog(in: home, name: "cli-newer.log", workspace: "/Users/me/project", ageSeconds: 30)
+        try makeLog(in: home, name: "cli-older.log", workspace: "/Users/me/project", ageSeconds: 20 * 60.0)
+
+        let discovered = AntigravityCLISessionSource(
+            antigravityCLIHome: home,
+            processProvider: {
+                [
+                    liveAgy(pid: 100, cwd: "/Users/me/project", tty: "ttys002"),
+                    liveAgy(pid: 200, cwd: "/Users/me/project", tty: "ttys009")
+                ]
+            }
+        ).discover(now: fixedNow)
+
+        XCTAssertEqual(discovered.count, 2)
+        XCTAssertEqual(Set(discovered.compactMap(\.tty)), ["ttys002", "ttys009"])
+        XCTAssertEqual(Set(discovered.map(\.lastActivity)), [
+            fixedNow.addingTimeInterval(-30),
+            fixedNow.addingTimeInterval(-20 * 60.0)
+        ])
+    }
+
+    /// Two processes sharing one terminal and one folder — a wrapper and the binary it exec'd —
+    /// are one session, not two.
+    func testTwoProcessesOnTheSameTTYAndCwdCollapseToOneSession() throws {
+        let home = try makeTemporaryDirectory()
+
+        let discovered = AntigravityCLISessionSource(
+            antigravityCLIHome: home,
+            processProvider: {
+                [
+                    liveAgy(pid: 100, cwd: "/Users/me/project", tty: "ttys002"),
+                    liveAgy(pid: 101, cwd: "/Users/me/project", tty: "ttys002")
+                ]
+            }
+        ).discover(now: fixedNow)
+        XCTAssertEqual(discovered.count, 1)
+    }
+
+    func testMissingLogDirectoryStillDiscoversTheLiveSession() throws {
+        let discovered = AntigravityCLISessionSource(
+            antigravityCLIHome: URL(fileURLWithPath: "/nonexistent/antigravity-cli"),
+            processProvider: { [liveAgy(cwd: "/Users/me/project")] }
+        ).discover(now: fixedNow)
+        XCTAssertEqual(discovered.map(\.title), ["project"])
     }
 
     // MARK: - Fixtures
@@ -362,7 +466,7 @@ final class AntigravityCLIJumpRoutingTests: XCTestCase {
     func testLiveAgyProcessYieldsATTYFocusRung() throws {
         let home = try makeTemporaryDirectory()
         try makeLog(in: home, name: "cli-20260808_160031.log", workspace: "/Users/me/project", ageSeconds: 60)
-        let liveProcess = ClaudeProcess(pid: 1, command: "/usr/local/bin/agy", cwd: "/Users/me/project", tty: "ttys009")
+        let liveProcess = liveAgy(cwd: "/Users/me/project", tty: "ttys009")
 
         let store = SessionStore(
             sources: [AntigravityCLISessionSource(antigravityCLIHome: home, processProvider: { [liveProcess] })],
@@ -372,13 +476,39 @@ final class AntigravityCLIJumpRoutingTests: XCTestCase {
 
         let session = try XCTUnwrap(store.sessions.first)
         XCTAssertEqual(session.agentName, "Antigravity")
-        // Like Codex, `agy` has no hooks — `AgentSession.tty` stays nil (it's hook-derived only)
-        // even though the jump rung itself resolves the live process's tty for exact focus.
+        // The tty now comes from discovery rather than from hooks `agy` doesn't have (#33), so it
+        // identifies THIS session instead of leaving the ladder to guess by cwd.
+        XCTAssertEqual(session.tty, "ttys009")
         XCTAssertEqual(session.jumpRung, .exactFocus(tty: "ttys009"))
+        XCTAssertEqual(session.resumeCommand, "agy")
     }
 
+    /// Two `agy` terminals in one folder used to be indistinguishable — the ladder could only pick
+    /// an agent process at the shared cwd and hope. Each row now carries the tty it was discovered
+    /// on, so each focuses its own tab.
     @MainActor
-    func testNoLiveProcessFallsBackToNewTabWithTheAgyResumeCommand() throws {
+    func testTwoAgySessionsInOneFolderEachFocusTheirOwnTab() throws {
+        let home = try makeTemporaryDirectory()
+        let processes = [
+            liveAgy(pid: 100, cwd: "/Users/me/project", tty: "ttys002"),
+            liveAgy(pid: 200, cwd: "/Users/me/project", tty: "ttys009")
+        ]
+
+        let store = SessionStore(
+            sources: [AntigravityCLISessionSource(antigravityCLIHome: home, processProvider: { processes })],
+            processProvider: { processes }
+        )
+        store.refresh(now: fixedNow)
+
+        XCTAssertEqual(
+            store.sessions.map(\.jumpRung).sorted { String(describing: $0) < String(describing: $1) },
+            [.exactFocus(tty: "ttys002"), .exactFocus(tty: "ttys009")]
+        )
+    }
+
+    /// A dead `agy` run leaves its logs behind; nothing about that is a session to jump to.
+    @MainActor
+    func testLogsLeftBehindByAFinishedRunProduceNoRowAtAll() throws {
         let home = try makeTemporaryDirectory()
         try makeLog(in: home, name: "cli-20260808_160031.log", workspace: "/Users/me/project", ageSeconds: 60)
 
@@ -388,9 +518,7 @@ final class AntigravityCLIJumpRoutingTests: XCTestCase {
         )
         store.refresh(now: fixedNow)
 
-        let session = try XCTUnwrap(store.sessions.first)
-        XCTAssertEqual(session.jumpRung, .newTab)
-        XCTAssertEqual(session.resumeCommand, "agy")
+        XCTAssertTrue(store.sessions.isEmpty)
     }
 
     private func makeTemporaryDirectory() throws -> URL {
@@ -418,12 +546,13 @@ final class AntigravityCLIWorkspaceDeduplicationTests: XCTestCase {
         try makeWorkspace(in: ideHome, hash: "other-a", folderPath: "/Users/me/other-a", ageSeconds: 360)
         try makeWorkspace(in: ideHome, hash: "other-b", folderPath: "/Users/me/other-b", ageSeconds: 780)
 
+        let liveProcess = liveAgy(cwd: "/Users/me/vibe-notch")
         let store = SessionStore(
             sources: [
                 AntigravitySessionSource(antigravityHome: ideHome, agyAvailableProvider: { false }, showWorkspaces: { true }),
-                AntigravityCLISessionSource(antigravityCLIHome: cliHome, processProvider: { [] })
+                AntigravityCLISessionSource(antigravityCLIHome: cliHome, processProvider: { [liveProcess] })
             ],
-            processProvider: { [] }
+            processProvider: { [liveProcess] }
         )
         store.refresh(now: fixedNow)
 
@@ -446,12 +575,13 @@ final class AntigravityCLIWorkspaceDeduplicationTests: XCTestCase {
         try makeWorkspace(in: ideHome, hash: "same-folder", folderPath: "/Users/me/vibe-notch", ageSeconds: 180)
         try makeWorkspace(in: ideHome, hash: "other-a", folderPath: "/Users/me/other-a", ageSeconds: 360)
 
+        let liveProcess = liveAgy(cwd: "/Users/me/vibe-notch")
         let store = SessionStore(
             sources: [
                 AntigravitySessionSource(antigravityHome: ideHome, agyAvailableProvider: { false }, showWorkspaces: { false }),
-                AntigravityCLISessionSource(antigravityCLIHome: cliHome, processProvider: { [] })
+                AntigravityCLISessionSource(antigravityCLIHome: cliHome, processProvider: { [liveProcess] })
             ],
-            processProvider: { [] }
+            processProvider: { [liveProcess] }
         )
         store.refresh(now: fixedNow)
 
@@ -495,6 +625,24 @@ final class AntigravityCLIWorkspaceDeduplicationTests: XCTestCase {
 /// Every fixture below is built against this fixed instant — kept as one private constant so
 /// `ageSeconds` always means the same thing regardless of which test class's fixture called it.
 private let fixtureNow = Date(timeIntervalSince1970: 1_786_000_000)
+
+/// A live `agy` process the way the real one looks on this machine: `/Users/…/.local/bin/agy`
+/// with a real controlling terminal. The tty is what makes it a session rather than an
+/// agent-spawned or background process (#33), so it is never optional here.
+private func liveAgy(
+    pid: Int32 = 46_021,
+    cwd: String,
+    tty: String = "ttys002",
+    startedAt: Date? = nil
+) -> ClaudeProcess {
+    ClaudeProcess(
+        pid: pid,
+        command: "/Users/me/.local/bin/agy",
+        cwd: cwd,
+        tty: tty,
+        startedAt: startedAt ?? fixtureNow.addingTimeInterval(-60 * 60.0)
+    )
+}
 
 /// A `cli-*.log`, with an optional `workspace <path>` line, at a given mtime age.
 @discardableResult
