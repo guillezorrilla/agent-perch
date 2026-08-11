@@ -1,24 +1,41 @@
 import Foundation
 
-/// Parses a `cli-*.log`'s `workspace <path>` line — the only place Antigravity's own CLI (`agy`)
+/// Parses a `cli-*.log`'s `workspace <path>` marker — the only place Antigravity's own CLI (`agy`)
 /// records the folder a run is working in.
+///
+/// The real line is a Go-style log line where the marker sits mid-line, not at the line's start,
+/// e.g. (byte-for-byte from a real log):
+/// `ERROR: logging before google.Init: I0810 09:16:58.692555       1 manager.go:367] Initializing
+/// CLI store manager for workspace /Users/gzorrilla/Developer/personal/vibe-notch`
 enum AntigravityCLILog {
-    /// The FIRST `workspace <path>` line's path, when a log somehow carries more than one; `nil`
-    /// when it carries none at all — there is nothing to jump to, so the caller must skip the
-    /// session outright rather than show a cwd-less row.
+    private static let marker = "workspace "
+
+    /// The FIRST matching line's path, when a log somehow carries more than one; `nil` when it
+    /// carries none at all — there is nothing to jump to, so the caller must skip the session
+    /// outright rather than show a cwd-less row.
+    ///
+    /// "Matching" means the line contains `workspace ` ANYWHERE, not just as a prefix — the
+    /// marker is preceded by unrelated log preamble in the real format above. When the marker
+    /// itself appears more than once on that line, the LAST occurrence wins, and the path is
+    /// everything after it to end-of-line (trimmed) — never truncated further, since a path may
+    /// itself contain spaces. A line with the marker whose remainder isn't an absolute path
+    /// (empty, or relative) yields `nil` outright rather than falling through to a later line.
     static func workspacePath(in text: String) -> String? {
         for line in text.split(whereSeparator: \.isNewline) {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            guard trimmed.hasPrefix("workspace ") else { continue }
-            let path = trimmed.dropFirst("workspace ".count).trimmingCharacters(in: .whitespaces)
-            return path.isEmpty ? nil : path
+            guard let markerRange = line.range(of: marker, options: .backwards) else { continue }
+            let candidate = line[markerRange.upperBound...]
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return candidate.hasPrefix("/") ? candidate : nil
         }
         return nil
     }
 
-    /// Reads only a bounded prefix of the log — the `workspace` line is written near the start of
-    /// a run, so there is no reason to load a potentially long-running session's entire log into
-    /// memory just to find it (mirrors `CodexRolloutMeta.firstLineSessionMeta`'s bounded read).
+    /// Reads only a bounded prefix of the log — the `workspace` marker is written near the start
+    /// of a run, so there is no reason to load a potentially long-running session's entire log
+    /// into memory just to find it (mirrors `CodexRolloutMeta.firstLineSessionMeta`'s bounded
+    /// read). Verified on a real log: the marker sat at byte offset 8077 of a 27,194-byte file —
+    /// comfortably inside this bound, but close enough to it that the bound must stay generous
+    /// rather than shrink.
     static func workspacePath(at url: URL) -> String? {
         guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? handle.close() }
@@ -90,9 +107,19 @@ enum AntigravityCLIDiscovery {
 /// Mirrors `CodexLiveness` exactly: `agy` has no hooks either, so a stale-vs-fresh mtime alone
 /// cannot tell a session that's still running from one whose terminal was simply left open — only
 /// an actual live process match may promote past `.idle`.
+///
+/// A live process alone is still not enough (issue #31): a terminal parked at an idle `agy` prompt
+/// keeps its process running indefinitely, which is not evidence a turn is in flight. `.active`
+/// needs BOTH a live process AND a log write recent enough (`activeWriteWindow`) to look like
+/// ongoing activity; a live process next to a stale log degrades to `.idle`, same as no process.
 enum AntigravityCLILiveness {
+    /// See `CodexLiveness.activeWriteWindow` — same reasoning, same value, mirrored rather than
+    /// shared because the two sources have no other coupling worth introducing just for this.
+    static let activeWriteWindow: TimeInterval = 90.0
+
     static func status(cwd: String, modifiedAt: Date, now: Date, processes: [ClaudeProcess]) -> SessionStatus? {
-        if hasLiveProcess(cwd: cwd, processes: processes) {
+        if hasLiveProcess(cwd: cwd, processes: processes),
+           now.timeIntervalSince(modifiedAt) < activeWriteWindow {
             return .active
         }
         guard now.timeIntervalSince(modifiedAt) < 60 * 60.0 else { return nil }
@@ -182,7 +209,10 @@ final class AntigravityCLISessionSource: AgentSessionSource {
                 // template — this only needs to name the launch itself, exactly like Codex's
                 // `codex resume <id>` does for its own resumeCommand.
                 resumeCommand: "agy",
-                sessionFileURL: nil
+                sessionFileURL: nil,
+                // No hooks: `.active` here only ever means "live process + recent write" (see
+                // `AntigravityCLILiveness`), never a verified in-flight turn (issue #31).
+                supportsLiveStatus: false
             )
         }
         return Array(discovered.prefix(10))

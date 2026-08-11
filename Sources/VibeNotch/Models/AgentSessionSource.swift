@@ -27,4 +27,15 @@ struct DiscoveredSession: Equatable, Sendable {
     /// Claude-only: the session transcript, so `SessionTitle.resolve` can look for
     /// `custom-title`/`agent-name`/`summary` metadata that only exists in that format.
     let sessionFileURL: URL?
+    /// Whether an `.active`/`.working` status from this source is backed by VERIFIED in-flight
+    /// activity, not merely "a live process happens to sit at this cwd". Claude's hooks report
+    /// real working/needs-action/done transitions, so it stays `true`. Codex and the `agy` CLI
+    /// have no hooks — their liveness is a live process plus a recently-touched transcript, which
+    /// tells you the process hasn't exited, never that a turn is actually in flight (a TUI parked
+    /// at an idle prompt stays alive indefinitely). `SessionCardView` uses this to withhold the
+    /// "Working…" treatment from sessions that can't honestly back it up (issue #31). Defaults to
+    /// `true` so the handful of sources/fixtures that never need to say otherwise don't have to.
+    /// `var` rather than `let` only so the synthesized memberwise init can give it that default
+    /// while still letting Codex/`agy` override it — this struct is never mutated after init.
+    var supportsLiveStatus: Bool = true
 }

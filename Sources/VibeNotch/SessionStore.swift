@@ -376,7 +376,8 @@ final class SessionStore: ObservableObject {
                 notificationMessage: hook?.notificationMessage,
                 pendingToolName: hook?.pendingToolName,
                 pendingToolInput: hook?.pendingToolInput,
-                resumeCommand: discovered?.resumeCommand
+                resumeCommand: discovered?.resumeCommand,
+                supportsLiveStatus: discovered?.supportsLiveStatus ?? true
             )
         }.sorted {
             if ($0.status == .needsAction) != ($1.status == .needsAction) {

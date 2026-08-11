@@ -65,34 +65,37 @@ struct FeaturedSessionCard: View {
 
     @ViewBuilder
     private var statusLine: some View {
-        switch session.status {
+        switch SessionStatusPresentation.of(session) {
         case .needsAction:
             // This is the card a session gets when it needs input but nothing is blocked on an
             // Allow/Deny — an idle "Claude is waiting for your input" notification. Clicking it
             // jumps to the terminal; it never answers anything on the user's behalf.
             Text("Needs input — click to jump")
                 .foregroundStyle(Color.vibeAmber)
-        case .done, .ended:
+        case .done:
             Text("Done — click to jump")
                 .foregroundStyle(Color.vibeGreen)
-        case .active, .idle, .working:
-            if session.status == .working, let activity = session.currentActivity {
-                HStack(spacing: 5) {
-                    SessionStatusDot(status: .working, size: 7)
-                    Text(activity)
-                        .font(.system(size: 11, design: .monospaced))
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                }
-                .foregroundStyle(Color.vibeGray)
-            } else {
-                HStack(spacing: 5) {
-                    ProgressView()
-                        .controlSize(.mini)
-                    Text("Working…")
-                }
-                .foregroundStyle(Color.vibeGray)
+        case let .activity(text):
+            HStack(spacing: 5) {
+                SessionStatusDot(status: .working, size: 7)
+                Text(text)
+                    .font(.system(size: 11, design: .monospaced))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
             }
+            .foregroundStyle(Color.vibeGray)
+        case .workingSpinner:
+            HStack(spacing: 5) {
+                ProgressView()
+                    .controlSize(.mini)
+                Text("Working…")
+            }
+            .foregroundStyle(Color.vibeGray)
+        case .neutral:
+            // A hookless session (Codex, `agy`): `.active` here only means "recently touched and
+            // a live process," never a verified in-flight turn — never claim "Working…" for it
+            // (#31). The elapsed time already sits in the card's trailing corner.
+            SessionStatusDot(status: session.status, size: 7)
         }
     }
 

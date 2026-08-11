@@ -237,14 +237,36 @@ final class CodexLivenessTests: XCTestCase {
         XCTAssertFalse(CodexLiveness.hasLiveProcess(sessionId: "abc", cwd: "/repo", processes: processes))
     }
 
-    func testStatusIsActiveWithALiveProcessRegardlessOfStaleMtime() {
+    /// Issue #31: a live process alone used to be enough for `.active` no matter how stale the
+    /// rollout was — exactly the bug where a `codex` TUI parked at an idle prompt (process still
+    /// running, nothing written in almost an hour) showed as "Working…". A live process next to
+    /// a write older than `activeWriteWindow` must now degrade to `.idle`, same as no process.
+    func testLiveProcessWithAWriteOlderThanTheActiveWriteWindowDegradesToIdle() {
         let now = Date(timeIntervalSince1970: 10_000)
         let processes = [ClaudeProcess(pid: 1, command: "/usr/local/bin/codex", cwd: "/repo", tty: nil)]
         XCTAssertEqual(
             CodexLiveness.status(
                 sessionId: "abc",
                 cwd: "/repo",
-                modifiedAt: now.addingTimeInterval(-10_000),
+                modifiedAt: now.addingTimeInterval(-5 * 60.0),
+                now: now,
+                processes: processes
+            ),
+            .idle
+        )
+    }
+
+    /// The other half of #31: a live process AND a write within `activeWriteWindow` together are
+    /// still enough for `.active` — the fix narrows what counts as evidence, it doesn't remove
+    /// `.active` altogether.
+    func testLiveProcessWithARecentWriteIsActive() {
+        let now = Date(timeIntervalSince1970: 10_000)
+        let processes = [ClaudeProcess(pid: 1, command: "/usr/local/bin/codex", cwd: "/repo", tty: nil)]
+        XCTAssertEqual(
+            CodexLiveness.status(
+                sessionId: "abc",
+                cwd: "/repo",
+                modifiedAt: now.addingTimeInterval(-10),
                 now: now,
                 processes: processes
             ),
@@ -320,6 +342,26 @@ final class CodexSessionSourceTests: XCTestCase {
         XCTAssertEqual(session.status, .idle, "no live process was supplied, so this must degrade to idle, not active")
         XCTAssertEqual(session.resumeCommand, Jumper.codexResumeCommand(sessionId: "abc-123"))
         XCTAssertNil(session.sessionFileURL)
+        // Codex has no hooks — `.active` can never mean more than "live process + recent write"
+        // (issue #31), so `SessionCardView` must never show "Working…" for it.
+        XCTAssertFalse(session.supportsLiveStatus)
+    }
+
+    /// The full #31 regression: a live `codex` process sitting at the session's cwd, but a
+    /// rollout that hasn't been written to in minutes (a TUI parked at an idle prompt) — the
+    /// process alone must not promote this to `.active`.
+    func testLiveProcessWithAStaleRolloutDegradesToIdleAtTheSourceLevel() throws {
+        let codexHome = try makeFixture(sessions: [
+            Fixture(id: "abc-123", cwd: "/Users/me/project", originator: "codex-tui", source: .string("cli"), ageSeconds: 5 * 60.0)
+        ])
+        let liveProcess = ClaudeProcess(pid: 1, command: "/usr/local/bin/codex", cwd: "/Users/me/project", tty: nil)
+
+        let discovered = CodexSessionSource(
+            codexHome: codexHome,
+            processProvider: { [liveProcess] },
+            showSubAgentSessions: { false }
+        ).discover(now: fixedNow)
+        XCTAssertEqual(discovered.first?.status, .idle)
     }
 
     func testActiveRequiresALiveMatchingProcess() throws {

@@ -235,7 +235,20 @@ enum CodexRolloutDiscovery {
 /// that's still running from one whose terminal was simply left open — `.active` needs an
 /// actual matching live process. `SessionStatus.at`'s mtime thresholds still gate `.idle` vs.
 /// hidden; they just can no longer promote a session to `.active` on their own.
+///
+/// A live process alone is not enough either (issue #31): a `codex` TUI parked at an idle prompt
+/// keeps running indefinitely, so "the process hasn't exited" is not evidence a turn is actually
+/// in flight. `.active` therefore needs BOTH a live process AND a rollout write recent enough
+/// (`activeWriteWindow`) to look like ongoing generation — a live process next to a stale rollout
+/// degrades to `.idle` exactly like no process at all.
 enum CodexLiveness {
+    /// A rollout file is appended continuously while Codex is actually generating, so a write
+    /// within this window is the closest thing to a real "is a turn in flight" signal a hookless
+    /// CLI can offer. Long enough to absorb an ordinary pause between tool calls, short enough
+    /// that an idle TUI's live-but-silent process stops counting as active within a couple of
+    /// minutes.
+    static let activeWriteWindow: TimeInterval = 90.0
+
     static func status(
         sessionId: String,
         cwd: String,
@@ -243,7 +256,8 @@ enum CodexLiveness {
         now: Date,
         processes: [ClaudeProcess]
     ) -> SessionStatus? {
-        if hasLiveProcess(sessionId: sessionId, cwd: cwd, processes: processes) {
+        if hasLiveProcess(sessionId: sessionId, cwd: cwd, processes: processes),
+           now.timeIntervalSince(modifiedAt) < activeWriteWindow {
             return .active
         }
         guard now.timeIntervalSince(modifiedAt) < 60 * 60.0 else { return nil }
@@ -347,7 +361,10 @@ final class CodexSessionSource: AgentSessionSource {
                 lastActivity: modifiedAt,
                 status: status,
                 resumeCommand: Jumper.codexResumeCommand(sessionId: meta.sessionId),
-                sessionFileURL: nil
+                sessionFileURL: nil,
+                // No hooks: `.active` here only ever means "live process + recent write" (see
+                // `CodexLiveness`), never a verified in-flight turn (issue #31).
+                supportsLiveStatus: false
             ))
         }
         return Array(discovered.prefix(10))

@@ -34,6 +34,12 @@ struct AgentSession: Identifiable, Equatable, Sendable {
     /// How to reopen this session when no live process/tty is found for it. `nil` means a
     /// plain shell at `cwd` is enough (Claude); Codex supplies `codex resume <id>`.
     let resumeCommand: String?
+    /// See `DiscoveredSession.supportsLiveStatus` — carried through unchanged by
+    /// `SessionStore.reconcile` (issue #31). Defaults to `true` (Claude's own behavior) so the
+    /// existing fixtures that build an `AgentSession` directly don't need to know this exists.
+    /// `var` rather than `let` only so the synthesized memberwise init can give it that default
+    /// while still letting callers override it — this struct is never mutated after init.
+    var supportsLiveStatus: Bool = true
 
     var id: String { sessionId }
 
