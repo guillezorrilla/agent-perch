@@ -107,6 +107,12 @@ struct TTYResolver {
     // "app-server", plus separate XPC helper processes) — none of these are an interactive
     // CLI session, so every one of these markers must be rejected the way isClaudeCLI already
     // rejects Claude.app's helpers (#24).
+    //
+    // `~/.codex/computer-use/Codex Computer Use.app/…` is the same shape out of a different
+    // bundle (#26): its path contains a SPACE, so splitting the command line on whitespace hands
+    // the basename check the bare word `codex` and it matches. Rejected by BUNDLE NAME, not by
+    // the general `.app/contents/` form `LiveAgentScan` can afford — this predicate also sees a
+    // real session's arguments, and one of those may legitimately name a path inside a bundle.
     static func isCodexCLI(command: String) -> Bool {
         let command = command.lowercased()
         guard command.contains("codex"),
@@ -114,6 +120,7 @@ struct TTYResolver {
               !command.contains("codex framework.framework"),
               !command.contains("codex (service)"),
               !command.contains("codex (renderer)"),
+              !command.contains("codex computer use.app"),
               !command.contains("app-server") else { return false }
 
         let executable = command.split(whereSeparator: \.isWhitespace).first.map(String.init) ?? ""
