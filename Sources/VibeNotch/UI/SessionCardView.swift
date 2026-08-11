@@ -14,7 +14,11 @@ struct FeaturedSessionCard: View {
     var body: some View {
         Button(action: onClick) {
             HStack(spacing: 13) {
-                InvaderGlyph(color: statusColor)
+                // The invader marches only while a turn is genuinely in flight, so movement on
+                // screen means live activity and nothing else (#53). Full cards are the only
+                // place this is passed: a compact row has no glyph, and the notch's own compact
+                // glyph is what shows while the panel is CLOSED, which must never animate.
+                InvaderGlyph(color: statusColor, isWorking: presentation.isWorking)
                     .scaleEffect(2)
                     .frame(width: 26, height: 24)
 
@@ -70,9 +74,15 @@ struct FeaturedSessionCard: View {
         SessionTitle.subtitle(forPrompt: session.lastPrompt)
     }
 
+    /// Asked once for the card: it decides both what the status line says and whether the glyph
+    /// is allowed to move, so the two can never disagree (#52, #53).
+    private var presentation: SessionStatusPresentation {
+        SessionStatusPresentation.of(session)
+    }
+
     @ViewBuilder
     private var statusLine: some View {
-        switch SessionStatusPresentation.of(session) {
+        switch presentation {
         case .needsAction:
             // This is the card a session gets when it needs input but nothing is blocked on an
             // Allow/Deny — an idle "Claude is waiting for your input" notification. Clicking it
@@ -99,9 +109,11 @@ struct FeaturedSessionCard: View {
             }
             .foregroundStyle(Color.vibeGray)
         case .neutral:
-            // A hookless session (Codex, `agy`): `.active` here only means "recently touched and
-            // a live process," never a verified in-flight turn — never claim "Working…" for it
-            // (#31). The elapsed time already sits in the card's trailing corner.
+            // Nothing verified is in flight. Either a hookless session (Codex, `agy`), whose
+            // `.active` only means "recently touched and a live process" (#31), or a hook-backed
+            // one sitting between turns, whose `.active`/`.idle` only means "transcript recently
+            // written" (#52). Neither can honestly claim "Working…"; the elapsed time already
+            // sits in the card's trailing corner.
             SessionStatusDot(status: session.status, size: 7)
         }
     }
@@ -114,11 +126,14 @@ struct FeaturedSessionCard: View {
         }
     }
 
+    /// VoiceOver hears exactly what the card draws, by the same rule (#52) — an idle session
+    /// announced as "working" was the same false claim in a channel nobody was looking at.
     private var statusLabel: String {
-        switch session.status {
+        switch presentation {
         case .needsAction: "needs input"
-        case .done, .ended: "done"
-        case .active, .idle, .working: "working"
+        case .done: "done"
+        case .activity, .workingSpinner: "working"
+        case .neutral: session.status == .active ? "active" : "idle"
         }
     }
 }

@@ -78,11 +78,32 @@ enum SessionStatusPresentation: Equatable {
         case .done, .ended:
             return .done
         case .active, .idle, .working:
-            guard session.supportsLiveStatus else { return .neutral }
-            if session.status == .working, let activity = session.currentActivity {
-                return .activity(activity)
-            }
-            return .workingSpinner
+            // `.working` is the ONLY status a hook ever sets to mean "a turn is in flight" —
+            // `SessionStore.handle` sets it on SessionStart/UserPromptSubmit/PreToolUse and
+            // nothing else produces it. `.active`/`.idle` come from a transcript's mtime
+            // (`SessionStatus.at`) and mean "recently written, not yet aged out" — "not
+            // finished", never "running". Letting them fall through to the spinner is what left
+            // a card spinning "Working…" five minutes after its turn ended (#52): `Stop` does set
+            // `.done`, but a transcript write landing after that hook wins `reconcile`'s
+            // `hookWins` check, so the discovered `.active` replaces it and the card claimed a
+            // turn that had already finished. Both now present as the status dot this case was
+            // documented to be all along.
+            guard session.supportsLiveStatus, session.status == .working else { return .neutral }
+            // A hook-verified turn with no tool named yet (`PreToolUse` hasn't fired, or its
+            // input didn't describe): the one case the spinner was written for.
+            guard let activity = session.currentActivity else { return .workingSpinner }
+            return .activity(activity)
+        }
+    }
+
+    /// Whether a turn is genuinely in flight behind this presentation — the single signal the
+    /// invader is allowed to move on (#53). Deliberately derived from the presentation rather than
+    /// from `status`, so "the card says it is working" and "the glyph animates" can never drift
+    /// apart, and so the #52 fix above governs both at once.
+    var isWorking: Bool {
+        switch self {
+        case .activity, .workingSpinner: true
+        case .needsAction, .done, .neutral: false
         }
     }
 }
