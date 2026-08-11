@@ -69,10 +69,40 @@ final class SessionLayoutTests: XCTestCase {
         XCTAssertEqual(split.compactRows, [idle])
     }
 
-    private func session(_ id: String, _ status: SessionStatus, at seconds: TimeInterval) -> AgentSession {
+    /// An Antigravity IDE-workspace row must never become a full card, even as the sole fallback
+    /// when nothing else is busy — it is capped at `.idle` in the source precisely so it can
+    /// never be mistaken for a real session (#29).
+    func testAntigravityWorkspaceRowIsNeverTheFallbackFullCardEvenAsTheMostRecentSession() {
+        let workspace = session("antigravity:abc", .idle, at: 900, agentName: "Antigravity")
+        let older = session("older", .idle, at: 100)
+
+        let split = SessionLayout.split(sessions: [workspace, older])
+
+        XCTAssertEqual(split.fullCards, [older])
+        XCTAssertEqual(split.compactRows, [workspace])
+    }
+
+    /// When EVERY session is an Antigravity workspace row, none becomes a full card — they all
+    /// stay compact rather than vanishing entirely.
+    func testAllAntigravityWorkspaceRowsStayCompactWhenNothingElseQualifies() {
+        let a = session("antigravity:a", .idle, at: 500, agentName: "Antigravity")
+        let b = session("antigravity:b", .idle, at: 100, agentName: "Antigravity")
+
+        let split = SessionLayout.split(sessions: [a, b])
+
+        XCTAssertEqual(split.fullCards, [])
+        XCTAssertEqual(split.compactRows, [a, b])
+    }
+
+    private func session(
+        _ id: String,
+        _ status: SessionStatus,
+        at seconds: TimeInterval,
+        agentName: String = "Claude"
+    ) -> AgentSession {
         AgentSession(
             sessionId: id,
-            agentName: "Claude",
+            agentName: agentName,
             cwd: "/tmp/\(id)",
             modifiedAt: Date(timeIntervalSince1970: seconds),
             status: status,

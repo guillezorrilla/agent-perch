@@ -114,8 +114,10 @@ final class Jumper: @unchecked Sendable {
     private func resolvePlan(for session: AgentSession) -> JumpPlan {
         // A GUI workspace, not a terminal — none of the tty/Warp/cmux machinery below applies,
         // and running it anyway risks matching an unrelated terminal process that merely shares
-        // this workspace's cwd (#3).
-        if session.agentName == "Antigravity" {
+        // this workspace's cwd (#3). A real `agy` CLI session (same `agentName`, different
+        // `sessionId` prefix — see `AgentSession.isAntigravityWorkspace`) falls through to the
+        // normal ladder below exactly like Claude/Codex (#29).
+        if session.isAntigravityWorkspace {
             return JumpPlan(
                 target: .openAntigravity(path: session.cwd, agyAvailable: session.resumeCommand != nil),
                 cwd: session.cwd,

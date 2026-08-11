@@ -383,6 +383,33 @@ final class CodexSessionSourceTests: XCTestCase {
         )
     }
 
+    /// The regression at the heart of issue #30, at the full `CodexSessionSource` level: a real
+    /// interactive session whose rollout day directory is several days old but whose file mtime
+    /// is fresh (~21 minutes, matching the machine this was diagnosed on) must still be
+    /// discovered, classified `.interactive`, and reported `.idle` — exactly the session the old
+    /// today/yesterday guess made invisible.
+    func testLongRunningSessionInAnOldDayDirectoryWithARecentMtimeIsDiscovered() throws {
+        let codexHome = try makeFixture(sessions: [
+            Fixture(
+                id: "long-running",
+                cwd: "/Users/me/project",
+                originator: "codex-tui",
+                source: .string("cli"),
+                ageSeconds: 20.9 * 60.0,
+                dayDirectoryAgeSeconds: 5 * 24 * 60 * 60.0
+            )
+        ])
+
+        let discovered = CodexSessionSource(
+            codexHome: codexHome,
+            processProvider: { [] },
+            showSubAgentSessions: { false }
+        ).discover(now: fixedNow)
+
+        XCTAssertEqual(discovered.map(\.sessionId), ["long-running"])
+        XCTAssertEqual(discovered.first?.status, .idle)
+    }
+
     func testMissingSessionIndexStillDiscoversFromRolloutsAlone() throws {
         let codexHome = try makeTemporaryDirectory()
         let dayDirectory = codexHome
@@ -412,6 +439,11 @@ final class CodexSessionSourceTests: XCTestCase {
         let source: JSONValue?
         var threadName: String?
         var ageSeconds: TimeInterval = 60
+        /// When set, the day directory is named for THIS age instead of `ageSeconds` —
+        /// reproducing issue #30's exact shape: a rollout whose day directory is far older than
+        /// the file's own mtime, because the session started days ago and never rotated into a
+        /// newer day directory.
+        var dayDirectoryAgeSeconds: TimeInterval?
     }
 
     private func makeFixture(sessions: [Fixture]) throws -> URL {
@@ -421,8 +453,9 @@ final class CodexSessionSourceTests: XCTestCase {
         var indexLines: [String] = []
         for session in sessions {
             let updatedAt = fixedNow.addingTimeInterval(-session.ageSeconds)
+            let dayDirectoryDate = fixedNow.addingTimeInterval(-(session.dayDirectoryAgeSeconds ?? session.ageSeconds))
             let dayDirectory = sessionsRoot.appendingPathComponent(
-                CodexRolloutDiscovery.dayDirectoryPath(for: updatedAt),
+                CodexRolloutDiscovery.dayDirectoryPath(for: dayDirectoryDate),
                 isDirectory: true
             )
             try FileManager.default.createDirectory(at: dayDirectory, withIntermediateDirectories: true)
@@ -519,7 +552,9 @@ final class CodexRolloutDiscoveryTests: XCTestCase {
         XCTAssertEqual(files.map(\.lastPathComponent), ["rollout-today.jsonl"])
     }
 
-    func testFallsBackToTheNewestDayDirectoriesWhenTodayAndYesterdayAreMissing() throws {
+    /// Day directories are found by ENUMERATING what exists on disk, never by guessing a date
+    /// name — a day directory that is neither today's nor yesterday's is still found.
+    func testFindsFilesInAnArbitrarilyOldDayDirectory() throws {
         let root = try makeTemporaryDirectory()
         let oldDirectory = root.appendingPathComponent("2020/01/01", isDirectory: true)
         try FileManager.default.createDirectory(at: oldDirectory, withIntermediateDirectories: true)
@@ -528,6 +563,63 @@ final class CodexRolloutDiscoveryTests: XCTestCase {
 
         let files = CodexRolloutDiscovery.candidateFiles(sessionsRoot: root, now: fixedNow, fileManager: .default)
         XCTAssertEqual(files.map(\.lastPathComponent), ["rollout-old.jsonl"])
+    }
+
+    /// The regression issue #30 exists for: a rollout's day directory is named for when its
+    /// session STARTED, not for when it was last touched, so a session alive for several days
+    /// still lives in the day directory it was born in — with a file mtime far newer than that
+    /// directory's own name would suggest. Guessing "today and yesterday" by directory name never
+    /// looked there at all; enumerating what actually exists (bounded to the newest
+    /// `dayDirectoryCount`) does.
+    func testOldDayDirectoryWithARecentFileMtimeIsStillDiscovered() throws {
+        let root = try makeTemporaryDirectory()
+        let oldStart = fixedNow.addingTimeInterval(-5 * 24 * 60 * 60.0)
+        let oldDirectory = root.appendingPathComponent(
+            CodexRolloutDiscovery.dayDirectoryPath(for: oldStart),
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: oldDirectory, withIntermediateDirectories: true)
+        let target = oldDirectory.appendingPathComponent("rollout-still-running.jsonl")
+        try Data().write(to: target)
+        // The directory is 5 days old, but the file itself was touched moments ago — a session
+        // that never rotated into a newer day directory but is still actively being appended to.
+        let recentMtime = fixedNow.addingTimeInterval(-20.9 * 60.0)
+        try FileManager.default.setAttributes([.modificationDate: recentMtime], ofItemAtPath: target.path)
+
+        let files = CodexRolloutDiscovery.candidateFiles(sessionsRoot: root, now: fixedNow, fileManager: .default)
+        XCTAssertEqual(files.map(\.lastPathComponent), ["rollout-still-running.jsonl"])
+    }
+
+    func testDefaultDayDirectoryCountIsTwentyOne() {
+        XCTAssertEqual(CodexRolloutDiscovery.defaultDayDirectoryCount, 21)
+    }
+
+    /// Day directories themselves are bounded independent of `maxFiles` — a power user's years of
+    /// `sessions/` history must never cost more than `dayDirectoryCount` single-directory
+    /// listings, however many rollout files might be hiding in the ones never even opened.
+    func testDayDirectoryCountCapsHowManyDayDirectoriesAreEverListed() throws {
+        let root = try makeTemporaryDirectory()
+        for offset in 0..<5 {
+            let date = fixedNow.addingTimeInterval(-Double(offset) * 24 * 60 * 60.0)
+            let directory = root.appendingPathComponent(
+                CodexRolloutDiscovery.dayDirectoryPath(for: date),
+                isDirectory: true
+            )
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let file = directory.appendingPathComponent("rollout-\(offset).jsonl")
+            try Data().write(to: file)
+            try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: file.path)
+        }
+
+        let files = CodexRolloutDiscovery.candidateFiles(
+            sessionsRoot: root,
+            now: fixedNow,
+            fileManager: .default,
+            dayDirectoryCount: 2
+        )
+        // Only the newest two day directories (offsets 0 and 1) were ever listed — the other
+        // three days' files never had a chance to be found, however high `maxFiles` is.
+        XCTAssertEqual(Set(files.map(\.lastPathComponent)), ["rollout-0.jsonl", "rollout-1.jsonl"])
     }
 
     func testIgnoresFilesNotMatchingTheRolloutNamingConvention() throws {

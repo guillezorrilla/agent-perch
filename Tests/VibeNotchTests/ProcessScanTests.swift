@@ -467,6 +467,7 @@ final class SessionIdentityTests: XCTestCase {
             projectsDirectory: temporaryDirectory(),
             codexHome: temporaryDirectory(),
             antigravityHome: temporaryDirectory(),
+            antigravityCLIHome: temporaryDirectory(),
             processProvider: { processes }
         )
     }
@@ -561,6 +562,7 @@ final class JumpingStateTests: XCTestCase {
             projectsDirectory: temporaryDirectory(),
             codexHome: temporaryDirectory(),
             antigravityHome: temporaryDirectory(),
+            antigravityCLIHome: temporaryDirectory(),
             processProvider: { [] }
         )
     }

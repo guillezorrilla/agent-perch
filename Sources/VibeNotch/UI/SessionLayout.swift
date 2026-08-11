@@ -21,9 +21,13 @@ enum SessionLayout {
 
         guard !busy.isEmpty else {
             // Nothing is working: keep the historical behavior of a single full card for the
-            // most recent session, so the panel is never just a bare list of rows.
-            guard let mostRecent = sessions.first else {
-                return Split(fullCards: [], compactRows: [])
+            // most recent session, so the panel is never just a bare list of rows. An Antigravity
+            // IDE-workspace row is never eligible for that card — it is capped at `.idle` in the
+            // source (never `isBusy`) precisely so it can't be mistaken for a real session, and
+            // the exemption has to be repeated here too: it would otherwise still win the
+            // fallback slot merely by being the single most recently touched folder (#29).
+            guard let mostRecent = sessions.first(where: { !$0.isAntigravityWorkspace }) else {
+                return Split(fullCards: [], compactRows: sessions)
             }
             let rest = sessions.filter { $0.id != mostRecent.id }
             return Split(fullCards: [mostRecent], compactRows: rest)

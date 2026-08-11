@@ -141,6 +141,7 @@ final class SessionTransitionTests: XCTestCase {
             projectsDirectory: temporaryDirectory(),
             codexHome: temporaryDirectory(),
             antigravityHome: temporaryDirectory(),
+            antigravityCLIHome: temporaryDirectory(),
             processProvider: { [] }
         )
 
@@ -220,6 +221,7 @@ final class SessionTransitionTests: XCTestCase {
             projectsDirectory: projects,
             codexHome: temporaryDirectory(),
             antigravityHome: temporaryDirectory(),
+            antigravityCLIHome: temporaryDirectory(),
             processProvider: { [] }
         )
 
@@ -248,6 +250,7 @@ final class SessionTransitionTests: XCTestCase {
             projectsDirectory: projects,
             codexHome: temporaryDirectory(),
             antigravityHome: temporaryDirectory(),
+            antigravityCLIHome: temporaryDirectory(),
             processProvider: { [] }
         )
         store.refresh(now: Date(timeIntervalSince1970: 101))

@@ -86,7 +86,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             store.codexHome.appendingPathComponent("sessions", isDirectory: true),
             store.codexHome.appendingPathComponent("session_index.jsonl", isDirectory: false),
             store.antigravityHome.appendingPathComponent("User/workspaceStorage", isDirectory: true),
-            store.antigravityHome.appendingPathComponent("User/globalStorage/storage.json", isDirectory: false)
+            store.antigravityHome.appendingPathComponent("User/globalStorage/storage.json", isDirectory: false),
+            store.antigravityCLIHome.appendingPathComponent("log", isDirectory: true),
+            store.antigravityCLIHome.appendingPathComponent("implicit", isDirectory: true)
         ]) { [weak store] in
             Task { @MainActor in store?.refresh() }
         }

@@ -121,35 +121,32 @@ enum AntigravityWorkspaceDiscovery {
     }
 }
 
-/// Mirrors `CodexLiveness`'s stale-mtime-vs-live-process split — a live process can promote a
-/// workspace to `.active` regardless of how stale its mtime is; without one, mtime only gates
-/// `.idle` vs. hidden — with one addition Antigravity needs on top of it: a running Antigravity
-/// process says nothing about WHICH open workspace an agent is actually working in (an Electron
-/// app's own process cwd is its Resources directory, not the folder the user opened, so
-/// per-workspace attribution by process is not possible the way it is for Claude/Codex's tty or
-/// `resume <id>` command line). So only the single workspace whose storage directory was touched
-/// most recently is ever eligible for `.active`; every other workspace a live process might also
-/// be sitting on shows idle instead, never active.
+/// A workspace row is capped at `.idle` — it may NEVER read as `.active`, however fresh its mtime
+/// or however recently Antigravity itself was seen running (#29). A workspace directory's mtime
+/// moves for reasons that have nothing to do with an agent — the IDE rewrites state there on
+/// window focus, on settings sync, on quit — and a live Antigravity process says nothing about
+/// WHICH open workspace, if any, an agent is actually working in (an Electron app's own process
+/// cwd is its Resources directory, not the folder the user opened, so per-workspace attribution by
+/// process was never possible the way it is for Claude/Codex's tty or `resume <id>` command line).
+/// Presenting a merely-open folder as "Working…" is exactly what tipped a real user off that this
+/// needed capping HERE, in the source, rather than only hidden by the view: a real
+/// `AntigravityCLISessionSource` session for the very same folder sat right beside a workspace row
+/// that also claimed to be active. `SessionStatus`'s usual `< 60 minutes` freshness window still
+/// gates `.idle` vs. hidden — it just can never promote past `.idle`.
 enum AntigravityLiveness {
-    static func status(
-        isMostRecentlyTouchedWorkspace: Bool,
-        processRunning: Bool,
-        modifiedAt: Date,
-        now: Date
-    ) -> SessionStatus? {
-        if processRunning, isMostRecentlyTouchedWorkspace {
-            return .active
-        }
+    static func status(modifiedAt: Date, now: Date) -> SessionStatus? {
         guard now.timeIntervalSince(modifiedAt) < 60 * 60.0 else { return nil }
         return .idle
     }
 }
 
-/// Whether an Antigravity IDE process is alive right now — the only signal `AntigravityLiveness`
-/// needs to ever promote a workspace to `.active`. Two independent checks, since either alone can
-/// miss: `code.lock` names the primary instance's pid directly but can go stale after a crash;
-/// the process listing finds any process running out of the IDE's bundle but says nothing about
-/// which pid is the real one. Either one seeing a live process is enough.
+/// Whether an Antigravity IDE process is alive right now. Not currently consulted by
+/// `AntigravitySessionSource` — a workspace row is capped at `.idle` regardless of whether
+/// Antigravity itself is running (#29) — but kept as a tested, standalone building block (#27):
+/// two independent checks, since either alone can miss. `code.lock` names the primary instance's
+/// pid directly but can go stale after a crash; the process listing finds any process running out
+/// of the IDE's bundle but says nothing about which pid is the real one. Either one seeing a live
+/// process is enough.
 enum AntigravityProcessCheck {
     static func isRunningNow(codeLockURL: URL) -> Bool {
         isRunning(codeLockURL: codeLockURL, fileManager: .default) || isRunningByExecutablePath()
@@ -206,37 +203,48 @@ enum AntigravityCLI {
 ///
 /// Antigravity has no per-session transcript to read — its agent turns are ephemeral and never
 /// persisted anywhere on disk — so unlike Claude/Codex this surfaces WORKSPACES the IDE has open
-/// or has recently had open, not agent turns. `DiscoveredSession.title` is the folder's own name;
-/// there is nothing more specific (a prompt, a summary) to show.
+/// or has recently had open, not agent turns. A row from this source can never be more than a
+/// hint that a folder was opened recently, so `DiscoveredSession.title` says so outright (see
+/// `workspaceTitle`) and `status` never claims more than `.idle` (see `AntigravityLiveness`) —
+/// unlike `AntigravityCLISessionSource`'s real `agy` terminal sessions, which behave exactly like
+/// Claude/Codex's.
 ///
 /// - Membership: one directory listing of `workspaceStorage` (never recursive, capped — see
 ///   `AntigravityWorkspaceDiscovery`), each candidate's `workspace.json` decoded for its folder
 ///   path (see `AntigravityWorkspaceJSON`).
 /// - Recency: `globalStorage/storage.json`'s `backupWorkspaces.folders[]` order, when a workspace
 ///   appears there (see `AntigravityGlobalStorage`/`AntigravityRecency`).
-/// - Liveness: see `AntigravityLiveness` for the "only the most-recently-touched workspace can
-///   ever be active" heuristic and why per-workspace attribution isn't possible here at all.
+/// - Liveness: see `AntigravityLiveness` — capped at `.idle`, never `.active` (#29).
 ///
 /// OFF BY DEFAULT (#27). A `workspaceStorage` directory's mtime moves for reasons that have
 /// nothing to do with an agent — the IDE rewrites state there on window focus, on settings sync,
 /// on quit — and Antigravity persists no per-agent state at that location at all, so "workspace
 /// touched in the last hour" is not evidence of agent activity the way a Claude transcript append
-/// or a Codex rollout write is. On a machine with Antigravity merely installed, workspaces were
-/// showing up minutes-fresh beside real Claude/Codex sessions with no Antigravity process running
-/// at all. `showAntigravityWorkspaces` is the opt-in; when it is off this source enumerates
-/// nothing and contributes nothing.
+/// or a Codex rollout write is. `showAntigravityWorkspaces` is the opt-in; when it is off this
+/// source enumerates nothing and contributes nothing. `AntigravityCLISessionSource` is NOT gated
+/// by this setting — it represents real sessions, not merely-open folders — and a workspace row
+/// for the same folder as a live CLI session is suppressed in `SessionStore` (see
+/// `isWorkspaceSessionId` and `SessionStore`'s dedup) so the two never show side by side.
 final class AntigravitySessionSource: AgentSessionSource {
     let agentName = "Antigravity"
     let antigravityHome: URL
     private let fileManager: FileManager
-    private let isRunningProvider: () -> Bool
     private let agyAvailableProvider: () -> Bool
     private let showWorkspaces: () -> Bool
+
+    /// Every `sessionId` this source hands out starts with this — how `SessionStore` and
+    /// `AgentSession.isAntigravityWorkspace` tell an IDE-workspace row apart from a real
+    /// `AntigravityCLISessionSource` session, both of which share `agentName == "Antigravity"` on
+    /// purpose (one Settings toggle, one pill).
+    static let workspaceSessionIdPrefix = "antigravity:"
+
+    static func isWorkspaceSessionId(_ sessionId: String) -> Bool {
+        sessionId.hasPrefix(workspaceSessionIdPrefix)
+    }
 
     init(
         antigravityHome: URL = AntigravitySessionSource.defaultAntigravityHome(),
         fileManager: FileManager = .default,
-        isRunningProvider: (() -> Bool)? = nil,
         agyAvailableProvider: @escaping () -> Bool = AntigravityCLI.isAgyAvailable,
         // Keyed identically to `AppSettings.showAntigravityWorkspaces` — @AppStorage is backed by
         // `UserDefaults.standard`, so the Settings toggle reaches discovery with no plumbing, the
@@ -247,8 +255,6 @@ final class AntigravitySessionSource: AgentSessionSource {
     ) {
         self.antigravityHome = antigravityHome
         self.fileManager = fileManager
-        let codeLockURL = antigravityHome.appendingPathComponent("code.lock", isDirectory: false)
-        self.isRunningProvider = isRunningProvider ?? { AntigravityProcessCheck.isRunningNow(codeLockURL: codeLockURL) }
         self.agyAvailableProvider = agyAvailableProvider
         self.showWorkspaces = showWorkspaces
     }
@@ -284,30 +290,23 @@ final class AntigravitySessionSource: AgentSessionSource {
         }
         guard !workspaces.isEmpty else { return [] }
 
-        // Costs a subprocess spawn each — never paid unless there is at least one real
-        // workspace to show for it.
-        let processRunning = isRunningProvider()
+        // Costs a subprocess spawn — never paid unless there is at least one real workspace to
+        // show for it.
         let agyAvailable = agyAvailableProvider()
         let recencyRank = AntigravityGlobalStorage.recencyRank(contentsAt: globalStorageJSONURL)
-        let mostRecentActivity = workspaces.map(\.lastActivity).max()
 
         let discovered: [DiscoveredSession] = workspaces.compactMap { workspace in
-            let isMostRecent = mostRecentActivity.map { workspace.lastActivity == $0 } ?? false
-            guard let status = AntigravityLiveness.status(
-                isMostRecentlyTouchedWorkspace: isMostRecent,
-                processRunning: processRunning,
-                modifiedAt: workspace.lastActivity,
-                now: now
-            ) else { return nil }
+            guard let status = AntigravityLiveness.status(modifiedAt: workspace.lastActivity, now: now)
+            else { return nil }
 
             let basename = workspace.cwd.hasPrefix("/")
                 ? URL(fileURLWithPath: workspace.cwd).lastPathComponent
                 : workspace.cwd
             return DiscoveredSession(
-                sessionId: "antigravity:\(workspace.storageDirectory.lastPathComponent)",
+                sessionId: Self.workspaceSessionIdPrefix + workspace.storageDirectory.lastPathComponent,
                 agentName: agentName,
                 cwd: workspace.cwd,
-                title: SessionTitle.truncate(basename, max: 60),
+                title: Self.workspaceTitle(basename: basename),
                 lastActivity: workspace.lastActivity,
                 status: status,
                 resumeCommand: agyAvailable ? "agy \(AppleScriptRunner.shellQuote(workspace.cwd))" : nil,
@@ -325,5 +324,26 @@ final class AntigravitySessionSource: AgentSessionSource {
             )
         }
         return Array(ordered.prefix(10))
+    }
+
+    /// A workspace row must never read like a real agent session (#29) — the qualifier lives IN
+    /// the title itself because a compact row (the only shape one of these is ever allowed to
+    /// take; see `SessionLayout`) has no secondary text line to carry it instead.
+    private static func workspaceTitle(basename: String) -> String {
+        let qualifier = " — workspace"
+        // `SessionTitle.truncate` can return up to `limit + 1` characters (a hard cut plus its
+        // own "…"), so the budget for the basename has to leave room for that on top of the
+        // qualifier — otherwise a long, space-free basename overshoots 60 by one.
+        let limit = max(1, 60 - qualifier.count - 1)
+        return SessionTitle.truncate(basename, max: limit) + qualifier
+    }
+}
+
+extension AgentSession {
+    /// True only for an `AntigravitySessionSource` IDE-workspace row — never for a real
+    /// `AntigravityCLISessionSource` terminal session, even though both share
+    /// `agentName == "Antigravity"` on purpose. See `AntigravitySessionSource.isWorkspaceSessionId`.
+    var isAntigravityWorkspace: Bool {
+        agentName == "Antigravity" && AntigravitySessionSource.isWorkspaceSessionId(sessionId)
     }
 }
