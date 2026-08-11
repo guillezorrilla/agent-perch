@@ -532,18 +532,13 @@ final class SessionStore: ObservableObject {
                 ),
                 lastPrompt: hook?.lastPrompt,
                 tty: tty,
-                terminalName: target.pid.flatMap { pid in
-                    // Cached-only: walking a pid's ancestry spawns `ps` twice per step, and this
-                    // runs on the main actor (#32). An unknown pid is walked in the background
-                    // right after, and until that lands the card keeps the terminal it was already
-                    // showing — the pill must not flicker, and the answer path reads this field to
-                    // know how to type into the session at all.
-                    guard terminalResolver.isResolved(pid) else {
-                        unresolvedPIDs.insert(pid)
-                        return shownTerminalNames[sessionID] ?? nil
-                    }
-                    return terminalResolver.cachedTerminalName(for: pid)
-                },
+                terminalName: Self.terminalName(
+                    forPID: target.pid,
+                    shown: shownTerminalNames[sessionID] ?? nil,
+                    isResolved: terminalResolver.isResolved,
+                    cachedName: terminalResolver.cachedTerminalName(for:),
+                    scheduleWalk: { unresolvedPIDs.insert($0) }
+                ),
                 currentActivity: hookWins ? hook?.currentActivity : nil,
                 notificationMessage: hook?.notificationMessage,
                 pendingToolName: hook?.pendingToolName,
@@ -561,6 +556,40 @@ final class SessionStore: ObservableObject {
 
         tokenTally.retain(sessionIDs: Set(sessions.map(\.sessionId)))
         resolveTerminalNames(for: unresolvedPIDs)
+    }
+
+    /// Which terminal a card shows this pass, and whether a background ancestry walk has to be
+    /// scheduled for its pid.
+    ///
+    /// Cached-only: walking a pid's ancestry spawns `ps` twice per step and this runs on the main
+    /// actor (#32). An unknown pid is walked in the background right after, and until that lands
+    /// the card keeps the terminal it was already showing — the pill must not flicker.
+    ///
+    /// The `pid == nil` arm is the part that was wrong (#42). This used to be a `flatMap` over the
+    /// pid, so no pid meant no name AND no walk — the name went straight back to nil the moment the
+    /// process table missed the session for one pass (a batched `lsof` that reports no cwd for a
+    /// pid drops it from the table entirely), and nothing was ever scheduled to put it back. A
+    /// nameless session can still be JUMPED to, by tty, which is exactly why the answer path went
+    /// on refusing a card the user could see working: it read this field. Keeping the last known
+    /// name across the gap is what lets the next pass — the process rescan already reconciles
+    /// again when it lands — resolve it instead of never.
+    ///
+    /// Static, `nonisolated` and injected so the rule is testable without a live process table.
+    nonisolated static func terminalName(
+        forPID pid: Int32?,
+        shown: String?,
+        isResolved: (Int32) -> Bool,
+        cachedName: (Int32) -> String?,
+        scheduleWalk: (Int32) -> Void
+    ) -> String? {
+        guard let pid else { return shown }
+        guard isResolved(pid) else {
+            scheduleWalk(pid)
+            return shown
+        }
+        // Resolved to nothing is an answer, not a gap: the walk found no terminal in this pid's
+        // ancestry and re-showing a stale pill would claim otherwise.
+        return cachedName(pid)
     }
 
     /// Walks the ancestry of pids the resolver has never seen, off the main actor, then reconciles

@@ -3,6 +3,10 @@ import SwiftUI
 
 struct SettingsView: View {
     @ObservedObject var settings: AppSettings
+    /// Owned by the window controller, not by this view: the window is built once and reused, so
+    /// re-reading the statuses has to happen on every `show()` — a grant changed in System Settings
+    /// while this was closed must not still read as missing (#42).
+    @ObservedObject var permissions: AnswerPermissionsModel
 
     var body: some View {
         Form {
@@ -106,16 +110,81 @@ struct SettingsView: View {
                     }
                 }
             }
+
+            // Gathered here, up front, precisely so nothing has to be asked for at the moment a
+            // permission card is on screen — see `AnswerPermissions` (#42). Reading a status never
+            // prompts; only the buttons do.
+            Section("Answering") {
+                permissionRow(
+                    title: "Accessibility",
+                    detail: "Types into Warp, Ghostty and cmux, the terminals with no scripting command for text. "
+                        + "macOS only reports whether this is on — never whether it was refused.",
+                    status: permissions.accessibility,
+                    request: { permissions.requestAccessibility() },
+                    openSettings: { permissions.open(AnswerPermissions.accessibilityPane) }
+                )
+
+                ForEach(permissions.automation) { row in
+                    permissionRow(
+                        title: "Automation · \(row.target.name)",
+                        detail: row.target.purpose,
+                        status: row.status,
+                        request: { permissions.request(row.target) },
+                        openSettings: { permissions.open(AnswerPermissions.automationPane) }
+                    )
+                }
+
+                Text("\(AnswerPermissions.permissionlessTerminals.joined(separator: ", ")) need no permission — "
+                    + "each takes the answer through its own command line.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
         .padding(12)
-        .frame(width: 500, height: 570)
+        .frame(width: 500, height: 620)
+    }
+
+    /// The same circle/label/button shape as the "Claude hooks" row above, with the status text
+    /// carrying the one thing that row never has to say: what to do when macOS will not re-ask.
+    @ViewBuilder
+    private func permissionRow(
+        title: String,
+        detail: String,
+        status: PermissionStatus,
+        request: @escaping () -> Void,
+        openSettings: @escaping () -> Void
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Circle()
+                    .fill(status.isGranted ? Color.green : (status == .denied ? Color.red : Color.gray))
+                    .frame(width: 8, height: 8)
+                Text(title)
+                Text(status.label)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if let action = status.action {
+                    Button(action.title) {
+                        switch action {
+                        case .request: request()
+                        case .openSystemSettings: openSettings()
+                        }
+                    }
+                }
+            }
+            Text(detail)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
     }
 }
 
 @MainActor
 final class SettingsWindowController {
     private let settings: AppSettings
+    private let permissions = AnswerPermissionsModel()
     private var window: NSWindow?
 
     init(settings: AppSettings) {
@@ -124,9 +193,12 @@ final class SettingsWindowController {
 
     func show() {
         settings.refreshHooksInstalled()
+        // Silent — every status here is read with the no-prompt API, which is what makes it safe
+        // to do on every open rather than at the moment an answer is needed (#42).
+        permissions.refresh()
         if window == nil {
             let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 500, height: 570),
+                contentRect: NSRect(x: 0, y: 0, width: 500, height: 620),
                 styleMask: [.titled, .closable],
                 backing: .buffered,
                 defer: false
@@ -134,7 +206,7 @@ final class SettingsWindowController {
             window.title = "VibeNotch Settings"
             window.isReleasedWhenClosed = false
             window.contentViewController = NSHostingController(
-                rootView: SettingsView(settings: settings)
+                rootView: SettingsView(settings: settings, permissions: permissions)
             )
             window.center()
             self.window = window
