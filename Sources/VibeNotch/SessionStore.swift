@@ -6,6 +6,25 @@ struct SessionTransition: Equatable, Sendable {
     let session: AgentSession
 }
 
+/// Resumes a continuation exactly once, whichever of two racing tasks reaches it first — the
+/// injection or the deadline watching it.
+private final class ResumeOnce: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Bool, Never>?
+
+    init(_ continuation: CheckedContinuation<Bool, Never>) {
+        self.continuation = continuation
+    }
+
+    func resume(_ value: Bool) {
+        let pending: CheckedContinuation<Bool, Never>? = lock.withLock {
+            defer { continuation = nil }
+            return continuation
+        }
+        pending?.resume(returning: value)
+    }
+}
+
 @MainActor
 final class SessionStore: ObservableObject {
     @Published private(set) var sessions: [AgentSession] = []
@@ -26,6 +45,12 @@ final class SessionStore: ObservableObject {
     /// How long "Approved ✓" stays up before the card falls back to the session's normal body.
     nonisolated static let answerHold: TimeInterval = 1.0
 
+    /// How long an injection is given before the card stops waiting on it. Typing an answer means
+    /// finding the session's tab first, which for Warp copies a database out of another app's
+    /// container; if that ever stalls, the card must still end up somewhere the user can act on
+    /// rather than sitting forever on a confirmation that never happened (#32).
+    nonisolated static let injectionTimeout: TimeInterval = 5.0
+
     let projectsDirectory: URL
     let codexHome: URL
     let antigravityHome: URL
@@ -36,6 +61,13 @@ final class SessionStore: ObservableObject {
     private var discoveredSessions: [String: DiscoveredSession] = [:]
     private var hookStates: [String: HookState] = [:]
     private var answerHoldTasks: [String: Task<Void, Never>] = [:]
+    /// Sessions whose answer injection is still in flight. Unlike `jumpingSessions` this is not
+    /// published: the card takes its resolution the instant the click lands, so nothing on screen
+    /// waits on this — it exists only to stop a second answer racing the first.
+    private var answeringSessions: Set<String> = []
+    /// Pids whose terminal is being resolved in the background right now, so the reconcile that
+    /// resolution triggers doesn't ask for the same walk a second time.
+    private var resolvingTerminalNamePIDs: Set<Int32> = []
 
     init(
         projectsDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
@@ -45,8 +77,12 @@ final class SessionStore: ObservableObject {
         antigravityCLIHome: URL = AntigravityCLISessionSource.defaultAntigravityCLIHome(),
         sources: [AgentSessionSource]? = nil,
         fileManager: FileManager = .default,
-        processProvider: @escaping () -> [ClaudeProcess] = { ProcessTableCache.shared.processes() },
-        terminalResolver: TerminalNameResolver = TerminalNameResolver()
+        // Non-blocking by default: reconciling happens on the main actor on every hook event, and
+        // `ProcessTableCache.processes()` would scan the process table right there when its
+        // snapshot has aged out (#32). `cachedProcesses()` answers from what it has and rescans in
+        // the background; `ProcessTableCache.onRefresh` is what brings the newer answer back.
+        processProvider: @escaping () -> [ClaudeProcess] = { ProcessTableCache.shared.cachedProcesses() },
+        terminalResolver: TerminalNameResolver = .shared
     ) {
         self.projectsDirectory = projectsDirectory
         self.codexHome = codexHome
@@ -271,6 +307,73 @@ final class SessionStore: ObservableObject {
         resolutions[sessionID] = .failed
     }
 
+    func isAnswering(_ sessionID: String) -> Bool { answeringSessions.contains(sessionID) }
+
+    /// Answers a card: acknowledge the click first, then type.
+    ///
+    /// The resolution is written BEFORE `inject` runs, so the card reacts to the click on the spot
+    /// even though the injection behind it still has to find the session's tab — for Warp, a copy
+    /// of a ~30MB database. That work used to happen inline on the main thread, which froze the
+    /// whole app for as long as it took (#32).
+    ///
+    /// The answered card's hold only starts once the keystroke has actually landed: starting it up
+    /// front would let a slow injection have its confirmation dismissed out from under it and then
+    /// fail, leaving a "Couldn't answer" card for a panel that had already closed.
+    ///
+    /// A second answer while one is in flight is ignored rather than queued, exactly as a second
+    /// jump is: the first is already typing, and two digits into one prompt answer two questions.
+    @discardableResult
+    func performAnswer(
+        _ sessionID: String,
+        label: String,
+        hold: TimeInterval = answerHold,
+        timeout: TimeInterval = injectionTimeout,
+        inject: @escaping @MainActor () async -> Bool
+    ) async -> Bool {
+        guard answeringSessions.insert(sessionID).inserted else { return false }
+        defer { answeringSessions.remove(sessionID) }
+
+        // Any hold left over from a previous answer is cancelled with it, so it cannot expire
+        // mid-injection and dismiss the card this one is about to confirm.
+        answerHoldTasks[sessionID]?.cancel()
+        answerHoldTasks[sessionID] = nil
+        resolutions[sessionID] = .answered(label)
+        let injected = await Self.firstAnswer(of: inject, within: timeout)
+
+        // Cleared while we were typing — the agent moved on, or the user jumped to do it by hand.
+        // Whatever it says now is newer than what this answer has to report.
+        guard resolutions[sessionID] != nil else { return injected }
+        if injected {
+            markAnswered(sessionID, label: label, hold: hold)
+        } else {
+            markUnanswerable(sessionID)
+        }
+        return injected
+    }
+
+    /// The injection's answer, or `false` once `timeout` passes — whichever comes first.
+    ///
+    /// The work cannot be cancelled (it is a file copy and a keystroke), so a timeout abandons it
+    /// rather than waiting for it. A card must never be left stuck behind a Warp database read
+    /// that never returns, which is the difference between a card that gives up and a UI that
+    /// hangs (#32).
+    private static func firstAnswer(
+        of work: @escaping @MainActor () async -> Bool,
+        within timeout: TimeInterval
+    ) async -> Bool {
+        await withCheckedContinuation { continuation in
+            let once = ResumeOnce(continuation)
+            let deadline = Task {
+                try? await Task.sleep(for: .seconds(timeout))
+                once.resume(false)
+            }
+            Task { @MainActor in
+                once.resume(await work())
+                deadline.cancel()
+            }
+        }
+    }
+
     func isJumping(_ sessionID: String) -> Bool { jumpingSessions.contains(sessionID) }
 
     /// Runs a jump with its card marked as jumping for exactly as long as it takes, cleared on
@@ -316,6 +419,15 @@ final class SessionStore: ObservableObject {
     private func reconcile(now: Date) {
         let ids = Set(discoveredSessions.keys).union(hookStates.keys)
         let processes = ids.isEmpty ? [] : processProvider()
+        // Pids whose terminal nobody has walked the ancestry for yet. Collected here and resolved
+        // off the main actor below, because each one costs a pair of `ps` spawns (#32).
+        var unresolvedPIDs: Set<Int32> = []
+        // What each card is showing right now, so a pid whose walk hasn't happened yet keeps the
+        // terminal it already had rather than blanking for a pass.
+        let shownTerminalNames = Dictionary(
+            sessions.map { ($0.sessionId, $0.terminalName) },
+            uniquingKeysWith: { first, _ in first }
+        )
         sessions = ids.compactMap { sessionID -> AgentSession? in
             let discovered = discoveredSessions[sessionID]
             let agentName = discovered?.agentName ?? "Claude"
@@ -371,7 +483,18 @@ final class SessionStore: ObservableObject {
                 ),
                 lastPrompt: hook?.lastPrompt,
                 tty: tty,
-                terminalName: target.pid.flatMap { terminalResolver.terminalName(for: $0) },
+                terminalName: target.pid.flatMap { pid in
+                    // Cached-only: walking a pid's ancestry spawns `ps` twice per step, and this
+                    // runs on the main actor (#32). An unknown pid is walked in the background
+                    // right after, and until that lands the card keeps the terminal it was already
+                    // showing — the pill must not flicker, and the answer path reads this field to
+                    // know how to type into the session at all.
+                    guard terminalResolver.isResolved(pid) else {
+                        unresolvedPIDs.insert(pid)
+                        return shownTerminalNames[sessionID] ?? nil
+                    }
+                    return terminalResolver.cachedTerminalName(for: pid)
+                },
                 currentActivity: hookWins ? hook?.currentActivity : nil,
                 notificationMessage: hook?.notificationMessage,
                 pendingToolName: hook?.pendingToolName,
@@ -385,6 +508,27 @@ final class SessionStore: ObservableObject {
             }
             return $0.modifiedAt > $1.modifiedAt
         }.prefix(10).map { $0 }
+
+        resolveTerminalNames(for: unresolvedPIDs)
+    }
+
+    /// Walks the ancestry of pids the resolver has never seen, off the main actor, then reconciles
+    /// once more so their terminal pills appear. Each walk is a pair of `ps` spawns per step, so
+    /// the answers are cached for the launch and this runs at most once per pid.
+    private func resolveTerminalNames(for pids: Set<Int32>) {
+        let pending = pids.subtracting(resolvingTerminalNamePIDs)
+        guard !pending.isEmpty else { return }
+        resolvingTerminalNamePIDs.formUnion(pending)
+
+        let resolver = terminalResolver
+        Task.detached(priority: .userInitiated) {
+            resolver.resolve(pending)
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                resolvingTerminalNamePIDs.subtract(pending)
+                reconcile(now: Date())
+            }
+        }
     }
 
     private static func isAtLeastAsFresh(_ hookDate: Date, as fileDate: Date) -> Bool {

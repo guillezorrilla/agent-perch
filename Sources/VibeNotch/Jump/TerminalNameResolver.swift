@@ -6,7 +6,18 @@ struct AncestorProcess: Equatable, Sendable {
     let command: String
 }
 
-final class TerminalNameResolver {
+/// Which terminal a pid is running inside, by walking its ancestry.
+///
+/// Every step of that walk costs two `ps` spawns, so the answer for a pid is cached for the rest of
+/// the launch — including "no terminal", which is just as expensive to work out a second time.
+///
+/// `@unchecked Sendable` over a locked cache: `SessionStore` reads it while reconciling on the main
+/// actor and `Jumper` fills it on the discovery queue, and the whole point of `shared` is that the
+/// lookups one of them paid for are already there for the other. Reading it must never spawn
+/// anything on the main actor — see `cachedTerminalName(for:)` (#32).
+final class TerminalNameResolver: @unchecked Sendable {
+    static let shared = TerminalNameResolver()
+
     typealias ProcessLookup = (Int32) -> AncestorProcess?
 
     private enum CachedName {
@@ -15,6 +26,7 @@ final class TerminalNameResolver {
     }
 
     private let process: ProcessLookup
+    private let lock = NSLock()
     private var cache: [Int32: CachedName] = [:]
 
     init(process: @escaping ProcessLookup = TerminalNameResolver.systemProcess) {
@@ -22,7 +34,7 @@ final class TerminalNameResolver {
     }
 
     func terminalName(for pid: Int32) -> String? {
-        if let cached = cache[pid] {
+        if let cached = cachedName(for: pid) {
             if case let .found(name) = cached { return name }
             return nil
         }
@@ -32,14 +44,38 @@ final class TerminalNameResolver {
         while currentPID > 1, visited.insert(currentPID).inserted,
               let current = process(currentPID) {
             if let name = Self.knownName(for: current.command) {
-                cache[pid] = .found(name)
+                store(.found(name), for: pid)
                 return name
             }
             currentPID = current.parentPID
         }
 
-        cache[pid] = .missing
+        store(.missing, for: pid)
         return nil
+    }
+
+    /// The answer we already have, without ever spawning `ps` to get one — what the main actor is
+    /// allowed to ask. `isResolved` tells "not looked up yet" apart from "looked up, no terminal",
+    /// so a caller knows whether resolving it in the background is still worth scheduling.
+    func cachedTerminalName(for pid: Int32) -> String? {
+        guard case let .found(name) = cachedName(for: pid) else { return nil }
+        return name
+    }
+
+    func isResolved(_ pid: Int32) -> Bool { cachedName(for: pid) != nil }
+
+    /// Resolves `pids` and caches the answers. Off the main actor, always: this is the `ps` work
+    /// `cachedTerminalName(for:)` refuses to do.
+    func resolve(_ pids: some Sequence<Int32>) {
+        for pid in pids { _ = terminalName(for: pid) }
+    }
+
+    private func cachedName(for pid: Int32) -> CachedName? {
+        lock.withLock { cache[pid] }
+    }
+
+    private func store(_ name: CachedName, for pid: Int32) {
+        lock.withLock { cache[pid] = name }
     }
 
     private static func knownName(for command: String) -> String? {

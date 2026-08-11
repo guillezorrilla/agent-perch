@@ -18,7 +18,26 @@ enum ActionInjectionPlan: Equatable, Sendable {
     case warp(cwd: String, key: InjectionKey)
 }
 
-struct ActionInjector {
+/// The half of an injection that has to happen on the main actor, once discovery has worked out
+/// where the answer goes: AppleScript and `CGEvent` posting are main-thread APIs.
+enum ActionInjectionDelivery: Equatable, Sendable {
+    case iTerm(tty: String, key: InjectionKey)
+    case terminal(tty: String, key: InjectionKey)
+    /// The tab to switch to before the answer key is typed, already read off the main actor.
+    case warpTab(index: Int, key: InjectionKey)
+    /// tmux needs no main-thread API at all — `send-keys` is a subprocess — so it is delivered on
+    /// the discovery queue and only its result travels back here.
+    case finished(Bool)
+}
+
+/// Two halves, exactly like `Jumper`: work out where the answer goes (slow, off the main actor),
+/// then type it (fast, necessarily on the main actor).
+///
+/// `@unchecked Sendable` because that split is the invariant: `warpTabLocator` is touched only from
+/// `DiscoveryQueue`, `appleScript` and `warpFocuser` only from the main actor. Answering used to
+/// run whole on the main thread — including the ~30MB copy of Warp's sqlite that locating a tab
+/// costs — so every click on a card froze the entire app until it finished (#32).
+struct ActionInjector: @unchecked Sendable {
     private let appleScript = AppleScriptRunner()
     private let warpTabLocator = WarpTabLocator()
     private let warpFocuser = WarpFocuser()
@@ -73,50 +92,77 @@ struct ActionInjector {
         }
     }
 
-    @MainActor
-    func inject(_ decision: ActionDecision, into session: AgentSession) -> Bool {
+    /// Async because none of this may happen on the main thread: locating a Warp tab copies a
+    /// ~30MB database out of another app's container, and doing that behind a click is what froze
+    /// the app (#32). The caller acknowledges the click first and awaits this afterwards.
+    func inject(_ decision: ActionDecision, into session: AgentSession) async -> Bool {
         guard let plan = Self.plan(
             terminalName: session.terminalName,
             tty: session.tty,
             cwd: session.cwd,
             decision: decision
         ) else { return false }
-        return inject(plan)
+        return await inject(plan)
     }
 
-    @MainActor
-    func inject(_ digit: String, into session: AgentSession) -> Bool {
+    func inject(_ digit: String, into session: AgentSession) async -> Bool {
         guard let plan = Self.plan(
             terminalName: session.terminalName,
             tty: session.tty,
             cwd: session.cwd,
             digit: digit
         ) else { return false }
-        return inject(plan)
+        return await inject(plan)
     }
 
-    @MainActor
-    private func inject(_ plan: ActionInjectionPlan) -> Bool {
+    func inject(_ plan: ActionInjectionPlan) async -> Bool {
+        guard let delivery = await DiscoveryQueue.run({ self.resolve(plan) }) else { return false }
+        return await deliver(delivery)
+    }
+
+    /// Phase one, on the discovery queue: everything that spawns a subprocess or reads Warp's
+    /// sqlite. Returning `nil` leaves the caller to fall back to a plain jump, so the user can
+    /// still answer by hand when Accessibility is not granted or the tab cannot be located.
+    private func resolve(_ plan: ActionInjectionPlan) -> ActionInjectionDelivery? {
         switch plan {
-        case let .iTerm(tty, key): return injectITerm(tty: tty, key: key)
-        case let .tmux(tty, key): return injectTmux(tty: tty, key: key)
-        case let .terminal(tty, key): return injectTerminal(tty: tty, key: key)
-        case let .warp(cwd, key): return injectWarp(cwd: cwd, key: key)
+        case let .iTerm(tty, key):
+            return .iTerm(tty: tty, key: key)
+        case let .terminal(tty, key):
+            return .terminal(tty: tty, key: key)
+        case let .tmux(tty, key):
+            return .finished(injectTmux(tty: tty, key: key))
+        case let .warp(cwd, key):
+            // Read fresh, never from a copy taken seconds ago: a tab opened since that copy would
+            // be missing from it entirely, and answering a stale index types the digit into
+            // someone else's tab (#23). A container refusal is still remembered for the launch, so
+            // this can never re-prompt.
+            guard WarpFocuser.keyCode(forAnswer: key) != nil,
+                  let tabIndex = warpTabLocator.tabIndex(forCwd: cwd, reusingRecentCopy: false)
+            else { return nil }
+            return .warpTab(index: tabIndex, key: key)
         }
     }
 
-    /// Focus the session's Warp tab, then type the answer into it. Returning `false` leaves the
-    /// caller to fall back to a plain jump, so the user can still answer by hand when
-    /// Accessibility is not granted or the tab cannot be located.
+    /// Phase two, on the main actor: one AppleScript, or the two keystrokes a Warp answer takes.
     @MainActor
-    private func injectWarp(cwd: String, key: InjectionKey) -> Bool {
-        guard WarpFocuser.keyCode(forAnswer: key) != nil,
-              let tabIndex = warpTabLocator.tabIndex(forCwd: cwd),
-              warpFocuser.focus(tabIndex: tabIndex) else { return false }
-        Thread.sleep(forTimeInterval: Self.warpTabSettle)
-        return warpFocuser.answer(key)
+    private func deliver(_ delivery: ActionInjectionDelivery) async -> Bool {
+        switch delivery {
+        case let .iTerm(tty, key):
+            return injectITerm(tty: tty, key: key)
+        case let .terminal(tty, key):
+            return injectTerminal(tty: tty, key: key)
+        case let .warpTab(index, key):
+            guard warpFocuser.focus(tabIndex: index) else { return false }
+            // Awaited, never slept: `Thread.sleep` here held the main thread for the settle, which
+            // is the one thing this whole path exists to stop doing (#32).
+            try? await Task.sleep(for: .seconds(Self.warpTabSettle))
+            return warpFocuser.answer(key)
+        case let .finished(result):
+            return result
+        }
     }
 
+    @MainActor
     private func injectITerm(tty: String, key: InjectionKey) -> Bool {
         let target = AppleScriptRunner.stringLiteral("/dev/\(tty)")
         let write: String
@@ -170,6 +216,7 @@ struct ActionInjector {
         ) != nil
     }
 
+    @MainActor
     private func injectTerminal(tty: String, key: InjectionKey) -> Bool {
         let target = AppleScriptRunner.stringLiteral("/dev/\(tty)")
         let keystroke: String

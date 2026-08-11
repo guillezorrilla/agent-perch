@@ -20,9 +20,10 @@ struct WarpTabLocator {
     }
 
     /// - Parameter reusingRecentCopy: whether a copy taken within `reuseWindow` is good enough.
-    ///   The answer injection that follows a jump wants the reuse (same tab, seconds apart); a
-    ///   jump itself does not — a tab opened since that copy was taken would be missing from it
-    ///   entirely, and landing on a stale index is exactly the wrong-tab bug (#23).
+    ///   Neither a jump nor an answer accepts one: a tab opened since that copy was taken is
+    ///   missing from it entirely, so a stale index lands on — and types into — the wrong tab
+    ///   (#23). Both read fresh, off the main actor, which is what makes the copy affordable
+    ///   (#32); the window still governs how often the TCC-gated container is touched at all.
     func tabIndex(forCwd cwd: String, reusingRecentCopy: Bool = true) -> Int? {
         guard let copiedDatabaseURL = workingCopy(reusingRecentCopy: reusingRecentCopy) else {
             return nil
