@@ -1,4 +1,5 @@
 import Foundation
+import Security
 import XCTest
 @testable import VibeNotch
 
@@ -293,5 +294,334 @@ extension UsageProviderTests {
 
         XCTAssertEqual(claude.fetchCount, 2)
         XCTAssertEqual(codex.fetchCount, 2)
+    }
+}
+
+// MARK: - Keychain credentials (#28)
+
+/// The `OSStatus` branch mapping, exercised as the pure function it is — no keychain involved.
+final class KeychainReadOutcomeTests: XCTestCase {
+    func testSuccessIsUsable() {
+        XCTAssertEqual(KeychainReadOutcome.of(errSecSuccess), .success)
+    }
+
+    /// The user said no, or there was no way to ask — an error row with a working retry, never a
+    /// silent disappearance.
+    func testTheThreeDeclinedStatusesMapToDeclined() {
+        XCTAssertEqual(KeychainReadOutcome.of(errSecUserCanceled), .declined)
+        XCTAssertEqual(KeychainReadOutcome.of(errSecAuthFailed), .declined)
+        XCTAssertEqual(KeychainReadOutcome.of(errSecInteractionNotAllowed), .declined)
+    }
+
+    func testItemNotFoundFallsThroughToTheFallbacks() {
+        XCTAssertEqual(KeychainReadOutcome.of(errSecItemNotFound), .notFound)
+    }
+
+    func testAnythingElseIsARetryableFailure() {
+        XCTAssertEqual(KeychainReadOutcome.of(errSecIO), .failed)
+        XCTAssertEqual(KeychainReadOutcome.of(errSecNotAvailable), .failed)
+        XCTAssertEqual(KeychainReadOutcome.of(-1), .failed)
+    }
+}
+
+/// Every read here goes through an injected closure — the real keychain is never touched.
+final class RuntimeUsageTokenSourceTests: XCTestCase {
+    private static let credentialsJSON = Data(#"{"claudeAiOauth":{"accessToken":"tok-abc"}}"#.utf8)
+    private let missingFile = URL(fileURLWithPath: "/nonexistent/vibenotch/.credentials.json")
+
+    private final class Script: @unchecked Sendable {
+        var results: [(OSStatus, Data?)]
+        private(set) var calls = 0
+        init(_ results: [(OSStatus, Data?)]) { self.results = results }
+        func next() -> (status: OSStatus, data: Data?) {
+            let result = results[min(calls, results.count - 1)]
+            calls += 1
+            return (result.0, result.1)
+        }
+    }
+
+    private func source(
+        _ script: Script,
+        securityCLIRead: @escaping () -> Data? = { nil },
+        credentialsURL: URL? = nil
+    ) -> RuntimeUsageTokenSource {
+        RuntimeUsageTokenSource(
+            credentialsURL: credentialsURL ?? missingFile,
+            keychainRead: { script.next() },
+            securityCLIRead: securityCLIRead
+        )
+    }
+
+    func testASuccessfulReadYieldsTheToken() async {
+        let script = Script([(errSecSuccess, Self.credentialsJSON)])
+        let result = await source(script).read()
+        XCTAssertEqual(result, .token("tok-abc"))
+        XCTAssertEqual(script.calls, 1)
+    }
+
+    /// A declined prompt is credentials that exist and could not be read — an error the strip can
+    /// show, never "this provider is not configured".
+    func testADeclinedPromptIsUnreadableNotMissing() async {
+        let script = Script([(errSecInteractionNotAllowed, nil)])
+        let tokenSource = source(script) { XCTFail("must not shell out when the item exists"); return nil }
+        let result = await tokenSource.read()
+        XCTAssertEqual(result, .unreadable("keychain access denied"))
+    }
+
+    /// The prompt must not be raised again and again behind the user's back — only their own
+    /// retry re-arms it.
+    func testADeclinedReadIsRememberedUntilAnExplicitRetry() async {
+        let script = Script([(errSecUserCanceled, nil)])
+        let tokenSource = source(script)
+
+        _ = await tokenSource.read()
+        _ = await tokenSource.read()
+        _ = await tokenSource.read()
+        XCTAssertEqual(script.calls, 1, "a refusal must not be re-asked on every refresh")
+
+        tokenSource.retryAfterFailure()
+        _ = await tokenSource.read()
+        XCTAssertEqual(script.calls, 2, "the user's own retry re-attempts the read")
+    }
+
+    func testARetryableFailureIsRetriedExactlyOnceAndThenSucceeds() async {
+        let script = Script([(errSecIO, nil), (errSecSuccess, Self.credentialsJSON)])
+        let result = await source(script).read()
+        XCTAssertEqual(result, .token("tok-abc"))
+        XCTAssertEqual(script.calls, 2)
+    }
+
+    func testTwoRetryableFailuresGiveUpAsUnreadableNotMissing() async {
+        let script = Script([(errSecIO, nil)])
+        let result = await source(script).read()
+        XCTAssertEqual(result, .unreadable("keychain unavailable"))
+        XCTAssertEqual(script.calls, 2, "retried once, never in a loop")
+    }
+
+    /// An item that IS there but whose contents can't be parsed is still not "unconfigured".
+    func testUnparsableKeychainContentsAreUnreadable() async {
+        let script = Script([(errSecSuccess, Data("not json".utf8))])
+        let result = await source(script).read()
+        XCTAssertEqual(result, .unreadable("credentials unreadable"))
+    }
+
+    func testItemNotFoundFallsBackToTheSecurityCLI() async {
+        let script = Script([(errSecItemNotFound, nil)])
+        let tokenSource = source(script, securityCLIRead: { Self.credentialsJSON })
+        let result = await tokenSource.read()
+        XCTAssertEqual(result, .token("tok-abc"))
+    }
+
+    func testItemNotFoundFallsBackToTheCredentialsFileLast() async throws {
+        let file = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(UUID().uuidString).json")
+        try Self.credentialsJSON.write(to: file)
+        addTeardownBlock { try? FileManager.default.removeItem(at: file) }
+
+        let script = Script([(errSecItemNotFound, nil)])
+        let tokenSource = source(script, securityCLIRead: { nil }, credentialsURL: file)
+        let result = await tokenSource.read()
+        XCTAssertEqual(result, .token("tok-abc"))
+    }
+
+    func testNothingAnywhereIsNotConfigured() async {
+        let script = Script([(errSecItemNotFound, nil)])
+        let result = await source(script).read()
+        XCTAssertEqual(result, .notConfigured)
+    }
+
+    /// Not memoized: signing into Claude Code later must bring the row back on its own.
+    func testNotConfiguredIsRecheckedOnEveryRead() async {
+        let script = Script([(errSecItemNotFound, nil), (errSecSuccess, Self.credentialsJSON)])
+        let tokenSource = source(script)
+        let first = await tokenSource.read()
+        XCTAssertEqual(first, .notConfigured)
+        let second = await tokenSource.read()
+        XCTAssertEqual(second, .token("tok-abc"))
+    }
+
+    /// One read that worked is the answer for the rest of the process — no later failure can turn
+    /// a working provider into an absent one.
+    func testASucceededReadIsCachedSoALaterFailedReadStillYieldsTheToken() async {
+        let script = Script([(errSecSuccess, Self.credentialsJSON), (errSecItemNotFound, nil)])
+        let tokenSource = source(script)
+
+        let first = await tokenSource.read()
+        XCTAssertEqual(first, .token("tok-abc"))
+        let second = await tokenSource.read()
+        XCTAssertEqual(second, .token("tok-abc"))
+        XCTAssertEqual(script.calls, 1, "the cached token answers without touching the keychain again")
+    }
+
+    /// `isAvailable()` runs on every refresh: cache-only, so it can neither spawn a read nor
+    /// re-raise the prompt.
+    func testAccessTokenIsCacheOnlyAndNeverReads() async {
+        let script = Script([(errSecSuccess, Self.credentialsJSON)])
+        let tokenSource = source(script)
+
+        XCTAssertNil(tokenSource.accessToken())
+        XCTAssertEqual(script.calls, 0, "the cheap synchronous check must not touch the keychain")
+
+        _ = await tokenSource.read()
+        XCTAssertEqual(tokenSource.accessToken(), "tok-abc")
+        XCTAssertEqual(script.calls, 1)
+    }
+
+    /// Concurrent refreshes must not queue up a second prompt behind the first.
+    func testConcurrentReadsCollapseToASingleKeychainRead() async {
+        let script = Script([(errSecSuccess, Self.credentialsJSON)])
+        let tokenSource = source(script)
+
+        async let first = tokenSource.read()
+        async let second = tokenSource.read()
+        async let third = tokenSource.read()
+        let results = await [first, second, third]
+
+        XCTAssertEqual(results, [.token("tok-abc"), .token("tok-abc"), .token("tok-abc")])
+        XCTAssertEqual(script.calls, 1)
+    }
+}
+
+// MARK: - Three-state strip (#28)
+
+extension UsageProviderTests {
+    private static let credentialsJSON = Data(#"{"claudeAiOauth":{"accessToken":"tok-abc"}}"#.utf8)
+    private static let usageJSON = Data("""
+    {"five_hour":{"utilization":10,"resets_at":"2026-08-09T22:19:59Z"},
+     "seven_day":{"utilization":20,"resets_at":"2026-08-10T00:59:59Z"}}
+    """.utf8)
+
+    private func claudeSource(
+        keychain: @escaping () -> (status: OSStatus, data: Data?),
+        loader: UsageLoading
+    ) -> ClaudeUsageSource {
+        ClaudeUsageSource(
+            tokenSource: RuntimeUsageTokenSource(
+                credentialsURL: URL(fileURLWithPath: "/nonexistent/vibenotch/.credentials.json"),
+                keychainRead: keychain,
+                securityCLIRead: { nil }
+            ),
+            loader: loader
+        )
+    }
+
+    /// The regression itself: credentials that exist but cannot be read used to leave the strip
+    /// with no Claude row at all, indistinguishable from never having used Claude.
+    @MainActor
+    func testUnreadableCredentialsRenderAnErrorRowInsteadOfDisappearing() async {
+        let source = claudeSource(
+            keychain: { (errSecInteractionNotAllowed, nil) },
+            loader: StubLoader(status: 200, body: Self.usageJSON)
+        )
+        let provider = UsageProvider(sources: [source], minFetchInterval: 0)
+
+        await provider.refresh()
+
+        XCTAssertEqual(provider.rows, [.unavailable(provider: "Claude", detail: "keychain access denied")])
+        XCTAssertTrue(provider.providers.isEmpty)
+    }
+
+    /// The other half of the three-state model: genuinely absent credentials stay omitted.
+    @MainActor
+    func testNoCredentialsAtAllOmitsTheProviderEntirely() async {
+        let source = claudeSource(
+            keychain: { (errSecItemNotFound, nil) },
+            loader: StubLoader(status: 200, body: Self.usageJSON)
+        )
+        let provider = UsageProvider(sources: [source], minFetchInterval: 0)
+
+        await provider.refresh()
+
+        XCTAssertTrue(provider.rows.isEmpty)
+    }
+
+    /// A provider that HAS numbers keeps showing them through an unreadable-credentials spell,
+    /// exactly like the 429 path.
+    @MainActor
+    func testAnUnreadableReadKeepsTheLastGoodNumbersOnScreen() async {
+        final class Flip: @unchecked Sendable {
+            var fail = false
+            func read() -> (status: OSStatus, data: Data?) {
+                fail ? (errSecUserCanceled, nil) : (errSecSuccess, UsageProviderTests.credentialsJSON)
+            }
+        }
+        let flip = Flip()
+        let source = claudeSource(keychain: { flip.read() }, loader: StubLoader(status: 200, body: Self.usageJSON))
+        let provider = UsageProvider(sources: [source], minFetchInterval: 0)
+
+        await provider.refresh()
+        XCTAssertEqual(provider.providers.first?.windows.first?.utilization, 10)
+
+        flip.fail = true
+        await provider.refresh()
+        XCTAssertEqual(
+            provider.providers.first?.windows.first?.utilization, 10,
+            "an unreadable read must not blank a provider that already has numbers"
+        )
+    }
+
+    /// The cached token is what makes that true even across a keychain that has gone away
+    /// entirely: one failed read can never drop the provider.
+    @MainActor
+    func testTheTokenCacheMeansASecondFailedReadStillYieldsData() async {
+        final class Script: @unchecked Sendable {
+            var calls = 0
+            func read() -> (status: OSStatus, data: Data?) {
+                calls += 1
+                return calls == 1 ? (errSecSuccess, UsageProviderTests.credentialsJSON) : (errSecItemNotFound, nil)
+            }
+        }
+        let script = Script()
+        let source = claudeSource(keychain: { script.read() }, loader: StubLoader(status: 200, body: Self.usageJSON))
+        let provider = UsageProvider(sources: [source], minFetchInterval: 0)
+
+        await provider.refresh()
+        await provider.refresh()
+
+        XCTAssertEqual(provider.providers.map(\.provider), ["Claude"])
+        XCTAssertEqual(script.calls, 1, "isAvailable/fetch must not re-read once a token is cached")
+    }
+
+    /// A fetch that fails with nothing cached is still a visible row — the point of the whole
+    /// three-state model is that nothing ever leaves the strip without saying why.
+    @MainActor
+    func testAFailedFirstFetchShowsAnErrorRowRatherThanNothing() async {
+        let source = claudeSource(
+            keychain: { (errSecSuccess, Self.credentialsJSON) },
+            loader: StubLoader(status: 500, body: Data("{}".utf8))
+        )
+        let provider = UsageProvider(sources: [source], minFetchInterval: 0)
+
+        await provider.refresh()
+
+        XCTAssertEqual(provider.rows, [.unavailable(provider: "Claude", detail: "usage unavailable")])
+    }
+
+    /// The strip's refresh button is the error row's retry: it re-attempts the read, so a prompt
+    /// the user declined can be raised again.
+    @MainActor
+    func testForceRefreshReAttemptsADeclinedKeychainRead() async {
+        final class Script: @unchecked Sendable {
+            var calls = 0
+            var declined = true
+            func read() -> (status: OSStatus, data: Data?) {
+                calls += 1
+                return declined ? (errSecUserCanceled, nil) : (errSecSuccess, UsageProviderTests.credentialsJSON)
+            }
+        }
+        let script = Script()
+        let source = claudeSource(keychain: { script.read() }, loader: StubLoader(status: 200, body: Self.usageJSON))
+        let provider = UsageProvider(sources: [source], minFetchInterval: 0)
+
+        await provider.refresh()
+        XCTAssertEqual(provider.rows, [.unavailable(provider: "Claude", detail: "keychain access denied")])
+
+        await provider.refresh()
+        XCTAssertEqual(script.calls, 1, "an ordinary refresh must not re-raise the prompt")
+
+        script.declined = false
+        await provider.forceRefresh()
+        XCTAssertEqual(script.calls, 2)
+        XCTAssertEqual(provider.providers.map(\.provider), ["Claude"])
     }
 }

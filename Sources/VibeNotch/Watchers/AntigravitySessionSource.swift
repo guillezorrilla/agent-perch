@@ -148,11 +148,11 @@ enum AntigravityLiveness {
 /// Whether an Antigravity IDE process is alive right now — the only signal `AntigravityLiveness`
 /// needs to ever promote a workspace to `.active`. Two independent checks, since either alone can
 /// miss: `code.lock` names the primary instance's pid directly but can go stale after a crash;
-/// `pgrep` finds any Antigravity process by name but says nothing about which pid is the real
-/// one. Either one seeing a live process is enough.
+/// the process listing finds any process running out of the IDE's bundle but says nothing about
+/// which pid is the real one. Either one seeing a live process is enough.
 enum AntigravityProcessCheck {
     static func isRunningNow(codeLockURL: URL) -> Bool {
-        isRunning(codeLockURL: codeLockURL, fileManager: .default) || isRunningByProcessName()
+        isRunning(codeLockURL: codeLockURL, fileManager: .default) || isRunningByExecutablePath()
     }
 
     static func isRunning(
@@ -167,9 +167,27 @@ enum AntigravityProcessCheck {
         return pidAlive(pid)
     }
 
-    static func isRunningByProcessName() -> Bool {
-        guard let listing = TTYResolver.output("/usr/bin/pgrep", ["Antigravity"]) else { return false }
-        return !listing.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    /// Matches on the EXECUTABLE PATH, never the process name. Antigravity's main process is
+    /// `/Applications/Antigravity IDE.app/Contents/MacOS/Electron`, whose process name is plain
+    /// `Electron` — `pgrep Antigravity` never matched it at all, and only ever found the helper
+    /// processes that happen to carry the product in their own names. Matching the bundle in the
+    /// path finds the real one, and still refuses the unrelated `Electron` processes (Claude.app,
+    /// Docker.app, …) that a bare name match on `Electron` would sweep up.
+    static func isRunningByExecutablePath(
+        listing: () -> String? = { TTYResolver.output("/bin/ps", ["-axo", "comm="]) }
+    ) -> Bool {
+        guard let output = listing() else { return false }
+        return output.split(separator: "\n").contains {
+            isAntigravityExecutable($0.trimmingCharacters(in: .whitespaces))
+        }
+    }
+
+    /// A path is Antigravity's only when one of its bundle names is a whole path component —
+    /// `/Applications/Antigravity IDE.app/…` yes, `/Applications/Claude.app/…/Electron` no.
+    static func isAntigravityExecutable(_ executablePath: String) -> Bool {
+        ["Antigravity IDE.app/", "Antigravity.app/"].contains { bundle in
+            executablePath.hasPrefix(bundle) || executablePath.contains("/" + bundle)
+        }
     }
 }
 
@@ -198,24 +216,41 @@ enum AntigravityCLI {
 ///   appears there (see `AntigravityGlobalStorage`/`AntigravityRecency`).
 /// - Liveness: see `AntigravityLiveness` for the "only the most-recently-touched workspace can
 ///   ever be active" heuristic and why per-workspace attribution isn't possible here at all.
+///
+/// OFF BY DEFAULT (#27). A `workspaceStorage` directory's mtime moves for reasons that have
+/// nothing to do with an agent — the IDE rewrites state there on window focus, on settings sync,
+/// on quit — and Antigravity persists no per-agent state at that location at all, so "workspace
+/// touched in the last hour" is not evidence of agent activity the way a Claude transcript append
+/// or a Codex rollout write is. On a machine with Antigravity merely installed, workspaces were
+/// showing up minutes-fresh beside real Claude/Codex sessions with no Antigravity process running
+/// at all. `showAntigravityWorkspaces` is the opt-in; when it is off this source enumerates
+/// nothing and contributes nothing.
 final class AntigravitySessionSource: AgentSessionSource {
     let agentName = "Antigravity"
     let antigravityHome: URL
     private let fileManager: FileManager
     private let isRunningProvider: () -> Bool
     private let agyAvailableProvider: () -> Bool
+    private let showWorkspaces: () -> Bool
 
     init(
         antigravityHome: URL = AntigravitySessionSource.defaultAntigravityHome(),
         fileManager: FileManager = .default,
         isRunningProvider: (() -> Bool)? = nil,
-        agyAvailableProvider: @escaping () -> Bool = AntigravityCLI.isAgyAvailable
+        agyAvailableProvider: @escaping () -> Bool = AntigravityCLI.isAgyAvailable,
+        // Keyed identically to `AppSettings.showAntigravityWorkspaces` — @AppStorage is backed by
+        // `UserDefaults.standard`, so the Settings toggle reaches discovery with no plumbing, the
+        // same way `showSubAgentSessions` reaches `CodexSessionSource`.
+        showWorkspaces: @escaping () -> Bool = {
+            UserDefaults.standard.bool(forKey: "showAntigravityWorkspaces")
+        }
     ) {
         self.antigravityHome = antigravityHome
         self.fileManager = fileManager
         let codeLockURL = antigravityHome.appendingPathComponent("code.lock", isDirectory: false)
         self.isRunningProvider = isRunningProvider ?? { AntigravityProcessCheck.isRunningNow(codeLockURL: codeLockURL) }
         self.agyAvailableProvider = agyAvailableProvider
+        self.showWorkspaces = showWorkspaces
     }
 
     static func defaultAntigravityHome() -> URL {
@@ -232,6 +267,9 @@ final class AntigravitySessionSource: AgentSessionSource {
     }
 
     func discover(now: Date) -> [DiscoveredSession] {
+        // Before the directory listing, not after: opted out means no disk work at all.
+        guard showWorkspaces() else { return [] }
+
         let directories = AntigravityWorkspaceDiscovery.candidateWorkspaceDirectories(
             workspaceStorageRoot: workspaceStorageRoot,
             fileManager: fileManager

@@ -73,6 +73,10 @@ final class AppSettings: ObservableObject {
     // reads directly from `UserDefaults.standard` — @AppStorage is backed by that same store,
     // so no plumbing is needed to get this toggle from Settings down to session discovery.
     @AppStorage("showSubAgentSessions") private var storedShowSubAgentSessions = false
+    // Same trick, same store, for `AntigravitySessionSource`. Off by default: an Antigravity
+    // workspace directory's mtime is not evidence of agent activity, so leaving this on surfaced
+    // idle workspaces beside real agent sessions (#27).
+    @AppStorage("showAntigravityWorkspaces") private var storedShowAntigravityWorkspaces = false
     @Published private var installedHooks = false
 
     let applicationSupportDirectory: URL
@@ -150,6 +154,15 @@ final class AppSettings: ObservableObject {
             guard newValue != storedShowSubAgentSessions else { return }
             objectWillChange.send()
             storedShowSubAgentSessions = newValue
+        }
+    }
+
+    var showAntigravityWorkspaces: Bool {
+        get { storedShowAntigravityWorkspaces }
+        set {
+            guard newValue != storedShowAntigravityWorkspaces else { return }
+            objectWillChange.send()
+            storedShowAntigravityWorkspaces = newValue
         }
     }
 

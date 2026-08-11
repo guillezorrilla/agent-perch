@@ -28,7 +28,7 @@ struct NotchContentView: View {
         Group {
             if !store.sessions.isEmpty {
                 VStack(alignment: .leading, spacing: 10) {
-                    UsageStripView(providers: usageProvider.providers) {
+                    UsageStripView(rows: usageProvider.rows) {
                         Task { await usageProvider.forceRefresh() }
                     }
 
@@ -284,19 +284,24 @@ struct CompactTrailingView: View {
 }
 
 struct UsageStripView: View {
-    let providers: [ProviderUsage]
+    let rows: [UsageRow]
     var onRefresh: () -> Void = {}
 
     var body: some View {
         HStack(alignment: .top, spacing: 7) {
-            if providers.isEmpty {
-                // No snapshot yet (never fetched / no credentials / rate-limited) — still offer a refresh.
+            if rows.isEmpty {
+                // Nothing configured anywhere, or nothing fetched yet — still offer a refresh.
                 Text("usage unavailable")
                     .foregroundStyle(Color.vibeGray)
             } else {
                 VStack(alignment: .leading, spacing: 2) {
-                    ForEach(providers, id: \.provider) { provider in
-                        providerRow(provider)
+                    ForEach(rows) { row in
+                        switch row {
+                        case .usage(let provider):
+                            providerRow(provider)
+                        case .unavailable(let provider, let detail):
+                            unavailableRow(provider: provider, detail: detail)
+                        }
                     }
                 }
             }
@@ -327,6 +332,25 @@ struct UsageStripView: View {
                 }
                 windowView(window)
             }
+        }
+        .lineLimit(1)
+    }
+
+    /// A provider whose credentials or endpoint let us down keeps its place in the strip and says
+    /// so. The strip's own refresh button is this row's retry — and, for a declined keychain
+    /// prompt, what re-raises it (#28).
+    @ViewBuilder
+    private func unavailableRow(provider: String, detail: String) -> some View {
+        HStack(spacing: 7) {
+            Text(glyph(for: provider))
+                .foregroundStyle(.white)
+            Text(provider)
+                .foregroundStyle(Color.vibeGray)
+                .frame(minWidth: 44, alignment: .leading)
+            Text("·")
+                .foregroundStyle(Color.vibeGray.opacity(0.65))
+            Text(detail)
+                .foregroundStyle(Color.vibeAmber)
         }
         .lineLimit(1)
     }
