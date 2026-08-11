@@ -1,12 +1,14 @@
 import SwiftUI
 
 /// The expanded card's progress panel (#15): how long this turn has been running and what it has
-/// cost, over the trail of steps behind it — with the agent's own checklist above them when it
-/// publishes one.
+/// cost, over the agent's own checklist when it publishes one.
 ///
-/// Renders literally nothing when there is nothing to say, which is the normal case for a
-/// hookless agent and for a session sitting idle. Every decision about what fits lives in
-/// `SessionProgress.rows`; this only draws it.
+/// The trail of finished tool calls it used to draw between the two is gone (#41) — the call in
+/// flight is the card's status line one row above, and the finished ones were never achievements.
+///
+/// Renders literally nothing when there is nothing to say, which is the normal case for a hookless
+/// agent and for a session sitting idle. Every decision about what fits lives in
+/// `SessionProgress.checklist`; this only draws it.
 struct SessionProgressView: View {
     let progress: SessionProgress
 
@@ -14,8 +16,8 @@ struct SessionProgressView: View {
         if progress.hasAnythingToShow {
             VStack(alignment: .leading, spacing: 3) {
                 header
-                ForEach(Array(SessionProgress.rows(progress).enumerated()), id: \.offset) { _, row in
-                    line(for: row)
+                ForEach(Array(SessionProgress.checklist(progress).enumerated()), id: \.offset) { _, todo in
+                    row(todo)
                 }
             }
             .padding(.top, 2)
@@ -46,25 +48,13 @@ struct SessionProgressView: View {
         }
     }
 
-    @ViewBuilder
-    private func line(for row: ProgressRow) -> some View {
-        switch row {
-        case let .todo(todo):
-            entry(glyph: glyph(for: todo.state), text: todo.label, isDone: todo.state == .completed)
-        case let .step(step):
-            entry(glyph: step.isComplete ? "✓" : "■", text: step.label, isDone: step.isComplete)
-        case let .more(count):
-            // No glyph — the overflow is a count, not a step anyone can act on.
-            entry(glyph: " ", text: "+\(count) more", isDone: false)
-        }
-    }
-
-    private func entry(glyph: String, text: String, isDone: Bool) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Text(glyph)
+    private func row(_ todo: ProgressTodo) -> some View {
+        let isDone = todo.state == .completed
+        return HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text(glyph(for: todo.state))
                 .foregroundStyle(isDone ? Color.vibeGreen : Color.vibeGray)
                 .frame(width: 9, alignment: .leading)
-            Text(text)
+            Text(todo.text)
                 .strikethrough(isDone, color: Color.vibeGray.opacity(0.7))
                 .foregroundStyle(Color.vibeGray.opacity(isDone ? 0.55 : 1))
                 .lineLimit(1)
@@ -76,7 +66,8 @@ struct SessionProgressView: View {
 
     private func glyph(for state: TodoState) -> String {
         switch state {
-        case .pending: "□"
+        // `.deleted` is filtered out before it ever reaches a row.
+        case .pending, .deleted: "□"
         case .inProgress: "■"
         case .completed: "✓"
         }
