@@ -510,6 +510,7 @@ final class SessionIdentityTests: XCTestCase {
             geminiHome: temporaryDirectory(),
             openCodeDatabaseURL: temporaryDirectory().appendingPathComponent("opencode.db"),
             kiroHome: temporaryDirectory(),
+            cursorHome: temporaryDirectory(),
             processProvider: { processes }
         )
     }
@@ -608,6 +609,7 @@ final class JumpingStateTests: XCTestCase {
             geminiHome: temporaryDirectory(),
             openCodeDatabaseURL: temporaryDirectory().appendingPathComponent("opencode.db"),
             kiroHome: temporaryDirectory(),
+            cursorHome: temporaryDirectory(),
             processProvider: { [] }
         )
     }

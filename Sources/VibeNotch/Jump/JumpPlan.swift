@@ -159,6 +159,33 @@ struct JumpPlan: Equatable, Sendable {
         var activatesOnMiss: Bool { self == .cmux }
     }
 
+    /// A GUI IDE whose "session" is a workspace FOLDER rather than a terminal, so a jump opens the
+    /// folder in the IDE instead of focusing a tty. Antigravity and Cursor are both VS Code forks
+    /// and both ship an optional CLI that takes a path, so one plan case and one launcher cover
+    /// both rather than a second near-copy of each (#11).
+    enum WorkspaceIDE: String, Equatable, Sendable {
+        case antigravity
+        case cursor
+
+        /// The IDE's own CLI, when it is on `PATH` — launched through `/usr/bin/env` so it runs
+        /// with the user's shell environment exactly as a typed command would.
+        var cli: String {
+            switch self {
+            case .antigravity: return "agy"
+            case .cursor: return "cursor"
+            }
+        }
+
+        /// What `open -a` asks LaunchServices for when the CLI is absent. Cursor's bundle is
+        /// `/Applications/Cursor.app`, whose display name is plain "Cursor".
+        var applicationName: String {
+            switch self {
+            case .antigravity: return "Antigravity IDE"
+            case .cursor: return "Cursor"
+            }
+        }
+    }
+
     enum Target: Equatable, Sendable {
         /// AppleScript-select the iTerm/Terminal tab holding this tty.
         case focusTTY(String)
@@ -168,10 +195,11 @@ struct JumpPlan: Equatable, Sendable {
         case focusTerminalByCwd(app: CwdFocusApp, cwd: String)
         /// ⌘-digit Warp's tab, located moments ago so a just-opened tab is included.
         case warpTab(Int)
-        /// A GUI workspace, not a terminal — Antigravity has no tty to focus at all. `agy <path>`
-        /// when it's on PATH, else `open -a "Antigravity IDE" <path>`; either one re-focuses an
-        /// already-open window on this folder rather than spawning a second one.
-        case openAntigravity(path: String, agyAvailable: Bool)
+        /// A GUI workspace, not a terminal — a VS Code-fork IDE has no tty to focus at all. The
+        /// IDE's own CLI when it's on PATH (`agy <path>`, `cursor <path>`), else
+        /// `open -a <app> <path>`; either one re-focuses an already-open window on this folder
+        /// rather than spawning a second one.
+        case openWorkspaceIDE(WorkspaceIDE, path: String, cliAvailable: Bool)
         /// Already focused off the main actor — cmux's own CLI subcommand, if one was found, or
         /// (lacking one) plain activation. `perform` only needs to report success.
         case alreadyFocused

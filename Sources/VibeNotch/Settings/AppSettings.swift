@@ -77,6 +77,10 @@ final class AppSettings: ObservableObject {
     // workspace directory's mtime is not evidence of agent activity, so leaving this on surfaced
     // idle workspaces beside real agent sessions (#27).
     @AppStorage("showAntigravityWorkspaces") private var storedShowAntigravityWorkspaces = false
+    // Same trick, same store, same default, for `CursorSessionSource` — and off for the same
+    // reason: a Cursor workspace directory's mtime moves on window focus and settings sync, not
+    // only on agent activity, so it is a hint about a folder and not evidence of a session (#11).
+    @AppStorage("showCursorWorkspaces") private var storedShowCursorWorkspaces = false
     @Published private var installedHooks = false
 
     let applicationSupportDirectory: URL
@@ -163,6 +167,15 @@ final class AppSettings: ObservableObject {
             guard newValue != storedShowAntigravityWorkspaces else { return }
             objectWillChange.send()
             storedShowAntigravityWorkspaces = newValue
+        }
+    }
+
+    var showCursorWorkspaces: Bool {
+        get { storedShowCursorWorkspaces }
+        set {
+            guard newValue != storedShowCursorWorkspaces else { return }
+            objectWillChange.send()
+            storedShowCursorWorkspaces = newValue
         }
     }
 

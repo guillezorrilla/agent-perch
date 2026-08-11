@@ -145,6 +145,7 @@ final class SessionTransitionTests: XCTestCase {
             geminiHome: temporaryDirectory(),
             openCodeDatabaseURL: temporaryDirectory().appendingPathComponent("opencode.db"),
             kiroHome: temporaryDirectory(),
+            cursorHome: temporaryDirectory(),
             processProvider: { [] }
         )
 
@@ -228,6 +229,7 @@ final class SessionTransitionTests: XCTestCase {
             geminiHome: temporaryDirectory(),
             openCodeDatabaseURL: temporaryDirectory().appendingPathComponent("opencode.db"),
             kiroHome: temporaryDirectory(),
+            cursorHome: temporaryDirectory(),
             processProvider: { [] }
         )
 
@@ -260,6 +262,7 @@ final class SessionTransitionTests: XCTestCase {
             geminiHome: temporaryDirectory(),
             openCodeDatabaseURL: temporaryDirectory().appendingPathComponent("opencode.db"),
             kiroHome: temporaryDirectory(),
+            cursorHome: temporaryDirectory(),
             processProvider: { [] }
         )
         store.refresh(now: Date(timeIntervalSince1970: 101))
