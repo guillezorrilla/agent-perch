@@ -30,7 +30,10 @@ struct TTYResolver {
     /// of those binaries' command lines in one call; each candidate line is still re-validated by
     /// the agent-specific CLI check.
     func processes() -> [ClaudeProcess] {
-        guard let listing = Self.output("/usr/bin/pgrep", ["-fl", "claude|codex|agy|antigravity"]) else {
+        guard let listing = Self.output(
+            "/usr/bin/pgrep",
+            ["-fl", "claude|codex|agy|antigravity|gemini|opencode|kiro"]
+        ) else {
             return []
         }
 
@@ -40,7 +43,10 @@ struct TTYResolver {
             let command = String(fields[1])
             guard Self.isClaudeCLI(command: command)
                 || Self.isCodexCLI(command: command)
-                || Self.isAntigravityCLI(command: command) else {
+                || Self.isAntigravityCLI(command: command)
+                || Self.isGeminiCLI(command: command)
+                || Self.isOpenCodeCLI(command: command)
+                || Self.isKiroCLI(command: command) else {
                 return nil
             }
             return Candidate(pid: pid, command: command)
@@ -84,6 +90,9 @@ struct TTYResolver {
         switch agentName {
         case "Codex": return isCodexCLI(command: command)
         case "Antigravity": return isAntigravityCLI(command: command)
+        case "Gemini": return isGeminiCLI(command: command)
+        case "OpenCode": return isOpenCodeCLI(command: command)
+        case "Kiro": return isKiroCLI(command: command)
         default: return isClaudeCLI(command: command)
         }
     }
@@ -141,6 +150,60 @@ struct TTYResolver {
         let executable = command.split(whereSeparator: \.isWhitespace).first.map(String.init) ?? ""
         let executableName = URL(fileURLWithPath: executable).lastPathComponent
         return executableName == "agy" || executableName == "antigravity"
+    }
+
+    // Homebrew installs `gemini` as a NODE SCRIPT with a shebang, so the process table shows the
+    // interpreter as argv[0] and the script as argv[1] — verified here (#11): `file` calls
+    // `/opt/homebrew/Cellar/gemini-cli/<v>/libexec/bin/gemini` "a node script text executable".
+    // A basename check alone would therefore miss every real session, so the install path is
+    // matched too. `~/.gemini/antigravity-cli/…` shares the word "gemini" and belongs to a
+    // different agent entirely, hence the explicit rejection.
+    static func isGeminiCLI(command: String) -> Bool {
+        let command = command.lowercased()
+        guard command.contains("gemini"),
+              !command.contains(".app/contents/"),
+              !command.contains("antigravity") else { return false }
+
+        let launcher = launcherTokens(command)
+        if URL(fileURLWithPath: launcher.first ?? "").lastPathComponent == "gemini" { return true }
+        // The shebang case: argv[0] is the interpreter, argv[1] the gemini script itself. Only that
+        // second token counts — an install path appearing anywhere ELSE on the command line is some
+        // other agent's ARGUMENT, not evidence of a Gemini session.
+        guard let script = launcher.dropFirst().first else { return false }
+        return URL(fileURLWithPath: script).lastPathComponent == "gemini" || script.contains("/gemini-cli/")
+    }
+
+    /// argv[0] and argv[1] — the only two places a launcher can be, since a shebang script puts the
+    /// interpreter first and the script second. Command lines containing a path with a SPACE are
+    /// mangled by this split, which is exactly why every caller rejects application bundles before
+    /// asking.
+    private static func launcherTokens(_ command: String) -> [String] {
+        command.split(maxSplits: 2, whereSeparator: \.isWhitespace).prefix(2).map(String.init)
+    }
+
+    // `opencode` ships as a single compiled binary to `~/.opencode/bin/opencode` and is not on
+    // PATH, so the install directory is accepted alongside the plain basename.
+    static func isOpenCodeCLI(command: String) -> Bool {
+        let command = command.lowercased()
+        guard command.contains("opencode"), !command.contains(".app/contents/") else { return false }
+
+        return launcherTokens(command).contains {
+            URL(fileURLWithPath: $0).lastPathComponent == "opencode" || $0.contains("/.opencode/bin/")
+        }
+    }
+
+    // The `.app/contents/` rejection is doing real work here, not boilerplate: Kiro's desktop
+    // helper lives at `/Applications/Kiro CLI.app/Contents/MacOS/kiro_cli_desktop`, and because
+    // that path contains a SPACE, splitting the command line on whitespace hands the basename
+    // check the word `kiro` and it would otherwise match (the same trap `LiveAgentScan`
+    // documents for `Codex Computer Use.app`).
+    static func isKiroCLI(command: String) -> Bool {
+        let command = command.lowercased()
+        guard command.contains("kiro"), !command.contains(".app/contents/") else { return false }
+
+        let executable = command.split(whereSeparator: \.isWhitespace).first.map(String.init) ?? ""
+        let executableName = URL(fileURLWithPath: executable).lastPathComponent
+        return executableName == "kiro" || executableName == "kiro-cli"
     }
 
     // Fallback when no live agent process matches: any shell sitting at the session's cwd (the

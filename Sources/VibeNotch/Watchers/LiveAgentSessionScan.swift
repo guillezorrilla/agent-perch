@@ -38,7 +38,25 @@ enum LiveAgentScan {
     static let agentsByExecutableName: [String: String] = [
         "codex": "Codex",
         "agy": "Antigravity",
-        "antigravity": "Antigravity"
+        "antigravity": "Antigravity",
+        "gemini": "Gemini",
+        "opencode": "OpenCode",
+        "kiro": "Kiro",
+        "kiro-cli": "Kiro"
+    ]
+
+    /// Agents whose launcher is a SCRIPT, not a binary — the process table shows an INTERPRETER as
+    /// argv[0], so the basename lookup above cannot see them at all. Homebrew's `gemini` is exactly
+    /// this: `file` calls it "a node script text executable", so a live session appears as
+    /// `node …/gemini-cli/…/libexec/bin/gemini` (#11).
+    ///
+    /// Matched against argv[1] ONLY, never the whole command line: `claude --mcp-config
+    /// …/gemini-cli/…` would otherwise be misread as a Gemini session, since Claude is deliberately
+    /// absent from the basename map above and would fall through to here.
+    static let agentsByScriptMarker: [(marker: String, agentName: String)] = [
+        ("/gemini-cli/", "Gemini"),
+        ("/bin/gemini", "Gemini"),
+        ("/.opencode/bin/", "OpenCode")
     ]
 
     /// Lowercased command-line markers that mean "this is not a user's CLI session" even though
@@ -81,8 +99,16 @@ enum LiveAgentScan {
     static func agentName(forCommand command: String) -> String? {
         let lowercased = command.lowercased()
         guard !rejectedCommandMarkers.contains(where: lowercased.contains) else { return nil }
-        let executable = command.split(maxSplits: 1, whereSeparator: \.isWhitespace).first.map(String.init) ?? ""
-        return agentsByExecutableName[URL(fileURLWithPath: executable).lastPathComponent.lowercased()]
+        let tokens = lowercased.split(maxSplits: 2, whereSeparator: \.isWhitespace)
+        let executable = tokens.first.map(String.init) ?? ""
+        if let agentName = agentsByExecutableName[URL(fileURLWithPath: executable).lastPathComponent] {
+            return agentName
+        }
+        // Only the INSTALL-PATH markers apply to argv[1], never the basename map: `claude
+        // /Users/me/agy` would otherwise read as an Antigravity session on the strength of an
+        // argument that merely happens to end in an agent's name.
+        guard let script = tokens.dropFirst().first.map(String.init) else { return nil }
+        return agentsByScriptMarker.first { script.contains($0.marker) }?.agentName
     }
 
     /// Every hookless session the listing proves exists, one per `(agent, canonical cwd, tty)`.
