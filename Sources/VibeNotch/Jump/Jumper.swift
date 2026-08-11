@@ -15,21 +15,16 @@ enum JumpRung: Equatable, Sendable {
 /// necessarily on the main actor — AppleScript and `CGEvent` posting are main-thread APIs).
 ///
 /// `@unchecked Sendable` because that split is the invariant: `resolver`, `terminalResolver` and
-/// `warpTabLocator` are touched only from `discoveryQueue`, `appleScript` and `warpFocuser` only
-/// from the main actor, and `processes` is thread-safe in its own right.
+/// `warpTabLocator` are touched only from `DiscoveryQueue` (which answering shares — see
+/// `ActionInjector`), `appleScript` and `warpFocuser` only from the main actor, and `processes`
+/// and `terminalResolver` are thread-safe in their own right.
 final class Jumper: @unchecked Sendable {
     private let resolver = TTYResolver()
-    private let terminalResolver = TerminalNameResolver()
+    private let terminalResolver = TerminalNameResolver.shared
     private let appleScript = AppleScriptRunner()
     private let warpTabLocator = WarpTabLocator()
     private let warpFocuser = WarpFocuser()
     private let processes: ProcessTableCache
-    /// Serial: two rapid clicks resolve one after the other rather than scanning on top of each
-    /// other, which also keeps `terminalResolver`'s ancestry cache single-threaded.
-    private let discoveryQueue = DispatchQueue(
-        label: "dev.vibenotch.jump.discovery",
-        qos: .userInitiated
-    )
     private static let log = Logger(subsystem: "dev.vibenotch", category: "jump")
 
     init(processes: ProcessTableCache = .shared) {
@@ -104,11 +99,7 @@ final class Jumper: @unchecked Sendable {
     /// index — resolved off the main actor. This used to run inline on a click, `lsof` by `lsof`,
     /// with the UI frozen for the duration (#23).
     private func plan(for session: AgentSession) async -> JumpPlan {
-        await withCheckedContinuation { continuation in
-            discoveryQueue.async {
-                continuation.resume(returning: self.resolvePlan(for: session))
-            }
-        }
+        await DiscoveryQueue.run { self.resolvePlan(for: session) }
     }
 
     private func resolvePlan(for session: AgentSession) -> JumpPlan {

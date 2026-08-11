@@ -192,9 +192,17 @@ enum AntigravityProcessCheck {
 /// `resumeCommand` uses this to prefer `agy <path>` over the `open -a` fallback the Jumper falls
 /// back to when it's absent.
 enum AntigravityCLI {
+    /// Answered once per launch, the same way `CmuxLauncher` caches its own availability: `which`
+    /// is a subprocess spawn, `discover` runs on the main actor on every refresh, and a CLI does
+    /// not appear on `PATH` mid-run. Asking every pass was one more main-thread spawn (#32).
+    private static var cachedAvailability: Bool?
+
     static func isAgyAvailable() -> Bool {
-        guard let output = TTYResolver.output("/usr/bin/which", ["agy"]) else { return false }
-        return !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if let cached = cachedAvailability { return cached }
+        let output = TTYResolver.output("/usr/bin/which", ["agy"])
+        let available = !(output ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        cachedAvailability = available
+        return available
     }
 }
 

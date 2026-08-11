@@ -35,6 +35,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApplication.shared.setActivationPolicy(.accessory)
         _ = try? HookScript.materialize(in: settings.applicationSupportDirectory)
+        // The store reconciles against whatever process snapshot is already in hand — it must
+        // never scan on the main actor (#32) — so a rescan landing in the background is what
+        // brings the newer answer to the UI.
+        ProcessTableCache.shared.onRefresh { [weak store] in
+            Task { @MainActor in store?.refresh() }
+        }
         store.refresh()
 
         let notch = DynamicNotch(hoverBehavior: [.increaseShadow], style: .auto) {

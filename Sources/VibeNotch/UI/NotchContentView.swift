@@ -172,7 +172,7 @@ struct NotchContentView: View {
         answer(
             in: session,
             label: decision == .allow ? "Approved ✓" : "Denied ✕",
-            inject: { actionInjector.inject(decision, into: session) }
+            inject: { await actionInjector.inject(decision, into: session) }
         )
     }
 
@@ -186,7 +186,7 @@ struct NotchContentView: View {
         answer(
             in: session,
             label: "\(prompt.options[option - 1]) ✓",
-            inject: { actionInjector.inject(String(option), into: session) }
+            inject: { await actionInjector.inject(String(option), into: session) }
         )
     }
 
@@ -194,18 +194,22 @@ struct NotchContentView: View {
         answer(
             in: session,
             label: "Option \(option) ✓",
-            inject: { actionInjector.inject(String(option), into: session) }
+            inject: { await actionInjector.inject(String(option), into: session) }
         )
     }
 
     /// Every answer lands here, so the card always says what happened to it. The panel is NOT
     /// collapsed on the spot any more — the store holds the confirmation for a beat and calls
     /// back for the close, or leaves the card up saying nothing was typed.
-    private func answer(in session: AgentSession, label: String, inject: () -> Bool) {
-        if inject() {
-            store.markAnswered(session.sessionId, label: label)
-        } else {
-            store.markUnanswerable(session.sessionId)
+    ///
+    /// The click is acknowledged before the typing starts, exactly like `jump(to:)` below: working
+    /// out where the answer goes can copy Warp's database, and doing that on the main thread with
+    /// the card still showing its buttons was the freeze in #32. The store owns the ordering, the
+    /// in-flight guard and the deadline; the view only says what to type and what to call it.
+    private func answer(in session: AgentSession, label: String, inject: @escaping @MainActor () async -> Bool) {
+        let store = store
+        Task { @MainActor in
+            await store.performAnswer(session.sessionId, label: label, inject: inject)
         }
     }
 
