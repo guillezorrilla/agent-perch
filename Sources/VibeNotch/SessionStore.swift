@@ -447,7 +447,10 @@ final class SessionStore: ObservableObject {
             guard let status = hookWins ? hook?.status : discovered?.status else { return nil }
             let cwd = discovered?.cwd ?? hook?.cwd ?? ""
             let modifiedAt = hookWins ? hook!.updatedAt : discovered!.lastActivity
-            let tty = hook?.tty
+            // Hooks outrank discovery: Claude reports its tty from inside its own terminal on
+            // every event, so it can never go stale. A hookless agent has no hooks to say so and
+            // supplies the tty its live process was found on instead (#33).
+            let tty = hook?.tty ?? discovered?.tty
             // One answer to "which process is this session", shared by the jump rung and the
             // terminal pill: the session's own tty first, then a process that names the session,
             // and only then anything that merely shares the cwd (#23).

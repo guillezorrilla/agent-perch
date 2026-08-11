@@ -18,7 +18,14 @@ struct AncestorProcess: Equatable, Sendable {
 final class TerminalNameResolver: @unchecked Sendable {
     static let shared = TerminalNameResolver()
 
-    typealias ProcessLookup = (Int32) -> AncestorProcess?
+    /// `@Sendable` is load-bearing, not decoration: the lookup is run on the discovery queue by
+    /// `Jumper` and on a detached task by `SessionStore.resolveTerminalNames` (#32), never on the
+    /// main actor. Without it a lookup written inside a `@MainActor` context — which is where every
+    /// test and every call site in the app builds one — is inferred main-actor-isolated, and the
+    /// compiler quietly wraps it in a thunk that traps (`dispatch_assert_queue`) the moment this
+    /// type honours its own contract and calls it off the main thread. Spelling it `@Sendable`
+    /// turns that runtime trap into a compile error at the point of injection.
+    typealias ProcessLookup = @Sendable (Int32) -> AncestorProcess?
 
     private enum CachedName {
         case found(String)
@@ -92,6 +99,7 @@ final class TerminalNameResolver: @unchecked Sendable {
         return nil
     }
 
+    @Sendable
     private static func systemProcess(pid: Int32) -> AncestorProcess? {
         guard let parent = TTYResolver.output(
             "/bin/ps",

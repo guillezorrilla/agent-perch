@@ -89,6 +89,45 @@ final class BatchedProcessListingTests: XCTestCase {
 
         XCTAssertEqual(TTYResolver.ttysByPID(inPSOutput: listing), [71001: "ttys002"])
     }
+
+    /// `etime`'s three shapes, byte-for-byte from `ps -o pid=,tty=,etime=` on the machine issue
+    /// #33 was measured on: `MM:SS` under an hour, `HH:MM:SS` under a day, `DD-HH:MM:SS` beyond.
+    func testElapsedTimeParsesAllThreePSShapes() {
+        XCTAssertEqual(TTYResolver.elapsedSeconds("00:42"), 42)
+        XCTAssertEqual(TTYResolver.elapsedSeconds("11:14:33"), 11 * 3_600.0 + 14 * 60.0 + 33)
+        XCTAssertEqual(TTYResolver.elapsedSeconds("02-04:31:00"), 2 * 86_400.0 + 4 * 3_600.0 + 31 * 60.0)
+    }
+
+    func testUnparsableElapsedTimesAreRejectedRatherThanGuessed() {
+        XCTAssertNil(TTYResolver.elapsedSeconds(""))
+        XCTAssertNil(TTYResolver.elapsedSeconds("42"))
+        XCTAssertNil(TTYResolver.elapsedSeconds("ttys002"))
+        XCTAssertNil(TTYResolver.elapsedSeconds("1-2-3:04:05"))
+        XCTAssertNil(TTYResolver.elapsedSeconds("00:00:00:01"))
+    }
+
+    /// The same `ps` run answers two questions, so the start-time parser has to survive the rows
+    /// the tty parser drops: a `??` process still reports a perfectly good elapsed time.
+    func testPSOutputBecomesAPidToStartTimeMap() {
+        let now = Date(timeIntervalSince1970: 1_786_000_000)
+        let listing = """
+            46021 ttys002     11:14:33
+            81983 ttys025  02-04:31:00
+            21321 ??       02-06:15:40
+            99999 ttys003
+            88888 ttys004  not-an-etime
+
+            """
+
+        XCTAssertEqual(
+            TTYResolver.startedAtByPID(inPSOutput: listing, now: now),
+            [
+                46_021: now.addingTimeInterval(-(11 * 3_600.0 + 14 * 60.0 + 33)),
+                81_983: now.addingTimeInterval(-(2 * 86_400.0 + 4 * 3_600.0 + 31 * 60.0)),
+                21_321: now.addingTimeInterval(-(2 * 86_400.0 + 6 * 3_600.0 + 15 * 60.0 + 40))
+            ]
+        )
+    }
 }
 
 final class CanonicalPathTests: XCTestCase {

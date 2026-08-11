@@ -1,5 +1,16 @@
+import Foundation
 import XCTest
 @testable import VibeNotch
+
+/// The resolver runs its lookup off the main actor by contract (#32), so the lookup is `@Sendable`
+/// and may not capture a plain `var`. Counting calls needs somewhere thread-safe to count.
+private final class LookupCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+
+    func increment() { lock.withLock { value += 1 } }
+    var count: Int { lock.withLock { value } }
+}
 
 final class TerminalNameResolverTests: XCTestCase {
     func testMapsKnownTerminalAncestorsUsingInjectedProcessTable() {
@@ -32,16 +43,16 @@ final class TerminalNameResolverTests: XCTestCase {
             30: AncestorProcess(pid: 30, parentPID: 20, command: "claude"),
             20: AncestorProcess(pid: 20, parentPID: 1, command: "ghostty")
         ]
-        var lookups = 0
-        let resolver = TerminalNameResolver {
-            lookups += 1
-            return table[$0]
+        let lookups = LookupCounter()
+        let resolver = TerminalNameResolver { pid in
+            lookups.increment()
+            return table[pid]
         }
 
         XCTAssertEqual(resolver.terminalName(for: 30), "Ghostty")
-        let firstLookupCount = lookups
+        let firstLookupCount = lookups.count
         XCTAssertEqual(resolver.terminalName(for: 30), "Ghostty")
-        XCTAssertEqual(lookups, firstLookupCount)
+        XCTAssertEqual(lookups.count, firstLookupCount)
     }
 
     func testUnknownAncestorReturnsNil() {

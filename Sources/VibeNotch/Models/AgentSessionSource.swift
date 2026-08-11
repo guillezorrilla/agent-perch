@@ -38,4 +38,11 @@ struct DiscoveredSession: Equatable, Sendable {
     /// `var` rather than `let` only so the synthesized memberwise init can give it that default
     /// while still letting Codex/`agy` override it — this struct is never mutated after init.
     var supportsLiveStatus: Bool = true
+    /// The controlling terminal this session was DISCOVERED on, for the hookless agents whose
+    /// sessions come from the process table (see `LiveAgentScan`). Claude leaves this `nil` and
+    /// keeps reporting its tty through hooks instead. It matters because it is per-session
+    /// identity: two Codex sessions open in the same repo differ only by tty, and without it the
+    /// jump rung can only fall back to "some agent process at this cwd" (`JumpTarget.ambiguousCwd`)
+    /// and pick between them by pid.
+    var tty: String? = nil
 }
