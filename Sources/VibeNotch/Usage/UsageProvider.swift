@@ -4,9 +4,40 @@ import Security
 import os
 
 struct UsageWindow: Equatable, Sendable {
+    /// Free text, not a fixed 5h/7d pair: Antigravity meters four buckets across two model
+    /// families and labels each one itself ("Gem 5h", "C/GPT 7d") (#18).
     let label: String
+    /// Percent USED, 0-100. Providers that report what is LEFT (Antigravity, Gemini both send a
+    /// `remainingFraction`) are converted in their parser, so every window on the strip means the
+    /// same thing.
     let utilization: Double
     let resetsAt: Date
+    /// A separate pool held back beyond the main bucket, which the reference UI renders as
+    /// "88% left · 75% in reserve". Optional because no provider wired here actually sends it:
+    /// Antigravity IDE 1.107.0's `RetrieveUserQuotaSummary` has no such field (verified against
+    /// the language server's own protobuf tags), so this is nil in practice today (#18).
+    let reserve: Double?
+    /// The provider itself says this number is an estimate rather than metered quota — Kiro
+    /// prints a literal "Estimated Usage" header. The strip must mark it, never pass it off as
+    /// real remaining quota (#18).
+    let isEstimate: Bool
+
+    /// Defaulted so every existing Claude/Codex call site — which has neither a reserve nor an
+    /// estimate — is unchanged. A `let` with an inline default would be dropped from the
+    /// memberwise initializer entirely, hence the explicit one.
+    init(
+        label: String,
+        utilization: Double,
+        resetsAt: Date,
+        reserve: Double? = nil,
+        isEstimate: Bool = false
+    ) {
+        self.label = label
+        self.utilization = utilization
+        self.resetsAt = resetsAt
+        self.reserve = reserve
+        self.isEstimate = isEstimate
+    }
 
     var level: UsageLevel {
         if utilization < 50 { return .low }
@@ -34,6 +65,15 @@ enum UsageLevel: Equatable, Sendable {
 struct ProviderUsage: Equatable, Sendable {
     let provider: String
     let windows: [UsageWindow]
+    /// The plan or tier exactly as the provider names it ("KIRO FREE"). nil when it doesn't say —
+    /// Antigravity's quota summary carries no tier field at all (#18).
+    let detail: String?
+
+    init(provider: String, windows: [UsageWindow], detail: String? = nil) {
+        self.provider = provider
+        self.windows = windows
+        self.detail = detail
+    }
 }
 
 enum UsageSourceError: Error {
@@ -71,7 +111,9 @@ enum UsageRow: Equatable, Identifiable, Sendable {
     }
 }
 
-protocol UsageSource {
+/// `Sendable` because the aggregator now refreshes every source concurrently (#18) — see
+/// `UsageProvider.refresh()`.
+protocol UsageSource: Sendable {
     var name: String { get }
     /// Cheap, synchronous, side-effect-free: "do I already hold what I need?". Called on every
     /// refresh, so it must never spawn work — see `ClaudeUsageSource.isAvailable()`.
@@ -98,7 +140,7 @@ enum UsageTokenReadResult: Equatable, Sendable {
     case notConfigured
 }
 
-protocol UsageTokenSource {
+protocol UsageTokenSource: Sendable {
     /// Cache-only. Never spawns a read, never raises a keychain prompt.
     func accessToken() -> String?
     func read() async -> UsageTokenReadResult
@@ -114,7 +156,7 @@ extension UsageTokenSource {
     func retryAfterFailure() {}
 }
 
-protocol UsageLoading {
+protocol UsageLoading: Sendable {
     func data(for request: URLRequest) async throws -> (Data, URLResponse)
 }
 
@@ -424,7 +466,7 @@ struct CodexCredentials: Equatable {
     let accountId: String
 }
 
-protocol CodexTokenSource {
+protocol CodexTokenSource: Sendable {
     func credentials() -> CodexCredentials?
 }
 
@@ -594,7 +636,13 @@ final class UsageProvider: ObservableObject {
     }
 
     init(
-        sources: [UsageSource] = [ClaudeUsageSource(), CodexUsageSource()],
+        sources: [UsageSource] = [
+            ClaudeUsageSource(),
+            CodexUsageSource(),
+            AntigravityUsageSource(),
+            KiroUsageSource(),
+            GeminiUsageSource()
+        ],
         minFetchInterval: TimeInterval = 90
     ) {
         self.states = sources.map { SourceState(source: $0, lastGood: nil, lastFetchAt: nil) }
@@ -616,22 +664,61 @@ final class UsageProvider: ObservableObject {
         await refresh()
     }
 
+    /// Every source that is off the throttle refreshes CONCURRENTLY, and each answer is published
+    /// the moment it lands rather than at the end.
+    ///
+    /// Serialized, one slow provider owned the whole strip: Kiro has no HTTP API at all and is
+    /// read by spawning `kiro-cli chat`, which takes seconds and is allowed up to twenty — so
+    /// Claude's and Codex's numbers, already in hand, would have sat unrendered behind it (#18).
     func refresh() async {
-        for index in states.indices {
-            await refreshSource(at: index)
+        var due: [(index: Int, source: UsageSource)] = []
+        for index in states.indices where isDue(at: index) {
+            states[index].lastFetchAt = Date()
+            due.append((index, states[index].source))
         }
-        publish()
-    }
-
-    private func refreshSource(at index: Int) async {
-        // Hovering re-creates the panel and re-fires this on every expand; without a
-        // floor, rapid hovers hammer the usage endpoints into 429. Serve cache within the window.
-        if let last = states[index].lastFetchAt, Date().timeIntervalSince(last) < minFetchInterval {
+        guard !due.isEmpty else {
+            publish()
             return
         }
-        states[index].lastFetchAt = Date()
 
-        switch await states[index].source.availability() {
+        await withTaskGroup(of: (Int, RefreshOutcome).self) { group in
+            for (index, source) in due {
+                group.addTask { (index, await Self.outcome(of: source)) }
+            }
+            for await (index, outcome) in group {
+                apply(outcome, at: index)
+                publish()
+            }
+        }
+    }
+
+    /// Hovering re-creates the panel and re-fires the refresh on every expand; without a floor,
+    /// rapid hovers hammer the usage endpoints into 429. Serve cache within the window.
+    private func isDue(at index: Int) -> Bool {
+        guard let last = states[index].lastFetchAt else { return true }
+        return Date().timeIntervalSince(last) >= minFetchInterval
+    }
+
+    /// What one source concluded. Computed off the main actor and applied back on it, which is
+    /// what lets the group run them all at once.
+    private enum RefreshOutcome: Sendable {
+        case notConfigured
+        case unavailable(String)
+        case usage(ProviderUsage)
+        case fetchFailed
+    }
+
+    private nonisolated static func outcome(of source: UsageSource) async -> RefreshOutcome {
+        switch await source.availability() {
+        case .notConfigured: return .notConfigured
+        case .unavailable(let detail): return .unavailable(detail)
+        case .ready:
+            do { return .usage(try await source.fetch()) } catch { return .fetchFailed }
+        }
+    }
+
+    private func apply(_ outcome: RefreshOutcome, at index: Int) {
+        switch outcome {
         case .notConfigured:
             // No credentials at all — this provider is simply absent, not an error.
             states[index].configured = false
@@ -643,16 +730,15 @@ final class UsageProvider: ObservableObject {
             // show does the row admit the problem.
             states[index].configured = true
             states[index].problem = detail
-        case .ready:
+        case .usage(let usage):
             states[index].configured = true
-            do {
-                states[index].lastGood = try await states[index].source.fetch()
-                states[index].problem = nil
-            } catch {
-                // Transient failure (429 rate-limit, 5xx, network error, etc.) — keep the
-                // last good numbers for this provider instead of dropping it from the strip.
-                states[index].problem = "usage unavailable"
-            }
+            states[index].lastGood = usage
+            states[index].problem = nil
+        case .fetchFailed:
+            // Transient failure (429 rate-limit, 5xx, network error, etc.) — keep the
+            // last good numbers for this provider instead of dropping it from the strip.
+            states[index].configured = true
+            states[index].problem = "usage unavailable"
         }
     }
 
