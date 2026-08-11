@@ -558,91 +558,41 @@ final class AntigravityLaunchCommandTests: XCTestCase {
     }
 }
 
+/// The `cmux --help` subcommand hunt these used to cover is gone — cmux ships no binary on PATH,
+/// so it could never fire, and real focus now goes through cmux's own AppleScript dictionary (#4).
+/// What survives is the install check, which still gates every cmux jump.
 final class CmuxLauncherTests: XCTestCase {
     override func tearDown() {
         CmuxLauncher.resetCacheForTesting()
     }
 
-    func testParseFocusSubcommandFindsAFocusKeyword() {
-        let help = """
-            Usage: cmux [command]
-
-            Commands:
-              focus <path>   Focus the window for a workspace
-              list           List open workspaces
-            """
-        XCTAssertEqual(CmuxLauncher.parseFocusSubcommand(help), "focus")
+    func testIsAvailableAcceptsABinaryOnPath() {
+        XCTAssertTrue(CmuxLauncher.isAvailable(which: { _ in "/opt/homebrew/bin/cmux" }))
     }
 
-    func testParseFocusSubcommandFindsAnActivateKeyword() {
-        XCTAssertEqual(
-            CmuxLauncher.parseFocusSubcommand("activate <path>  Activate cmux on a given workspace\n"),
-            "activate"
-        )
+    /// The real shape on a machine with cmux installed: app only, nothing on PATH — which is
+    /// precisely why the old `cmux --help` probe could never have worked.
+    func testIsAvailableFallsBackToTheInstalledAppWhenNothingIsOnPath() {
+        XCTAssertFalse(CmuxLauncher.isAvailable(
+            which: { _ in nil },
+            fileManager: MissingAppFileManager()
+        ))
     }
 
-    func testParseFocusSubcommandReturnsNilWhenNothingMatches() {
-        let help = "Usage: cmux [command]\n\nCommands:\n  list   List open workspaces\n"
-        XCTAssertNil(CmuxLauncher.parseFocusSubcommand(help))
+    func testIsAvailableIsCachedSoAJumpNeverReprobes() {
+        var probes = 0
+        let which: (String) -> String? = { _ in
+            probes += 1
+            return "/opt/homebrew/bin/cmux"
+        }
+        XCTAssertTrue(CmuxLauncher.isAvailable(which: which))
+        XCTAssertTrue(CmuxLauncher.isAvailable(which: which))
+        XCTAssertEqual(probes, 1)
     }
+}
 
-    func testAttemptFocusReturnsFalseAndNeverProbesWhenCmuxIsNotAvailable() {
-        let handled = CmuxLauncher.attemptFocus(
-            cwd: "/repo",
-            isAvailable: { false },
-            focusSubcommand: { XCTFail("must not probe for a subcommand when cmux isn't installed"); return nil },
-            runCmux: { _, _ in XCTFail("must not run cmux when it isn't installed"); return false },
-            activate: { XCTFail("must not activate cmux when it isn't installed"); return false }
-        )
-        XCTAssertFalse(handled)
-    }
-
-    func testAttemptFocusUsesTheSubcommandWhenItSucceeds() {
-        var ranWith: (subcommand: String, cwd: String)?
-        let handled = CmuxLauncher.attemptFocus(
-            cwd: "/repo",
-            isAvailable: { true },
-            focusSubcommand: { "focus" },
-            runCmux: { subcommand, cwd in
-                ranWith = (subcommand, cwd)
-                return true
-            },
-            activate: { XCTFail("must not fall back to activation once the subcommand succeeds"); return false }
-        )
-        XCTAssertTrue(handled)
-        XCTAssertEqual(ranWith?.subcommand, "focus")
-        XCTAssertEqual(ranWith?.cwd, "/repo")
-    }
-
-    func testAttemptFocusFallsBackToActivationWhenNoSubcommandExists() {
-        var activated = false
-        let handled = CmuxLauncher.attemptFocus(
-            cwd: "/repo",
-            isAvailable: { true },
-            focusSubcommand: { nil },
-            runCmux: { _, _ in XCTFail("no subcommand was found; must not attempt to run one"); return false },
-            activate: {
-                activated = true
-                return true
-            }
-        )
-        XCTAssertTrue(handled)
-        XCTAssertTrue(activated)
-    }
-
-    func testAttemptFocusFallsBackToActivationWhenTheSubcommandFails() {
-        var activated = false
-        let handled = CmuxLauncher.attemptFocus(
-            cwd: "/repo",
-            isAvailable: { true },
-            focusSubcommand: { "focus" },
-            runCmux: { _, _ in false },
-            activate: {
-                activated = true
-                return true
-            }
-        )
-        XCTAssertTrue(handled)
-        XCTAssertTrue(activated)
-    }
+/// Stands in for a machine with no cmux bundle, so the availability check can be exercised
+/// without depending on whether this one happens to have cmux installed.
+private final class MissingAppFileManager: FileManager, @unchecked Sendable {
+    override func fileExists(atPath path: String) -> Bool { false }
 }

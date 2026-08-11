@@ -132,9 +132,40 @@ struct JumpTarget: Equatable, Sendable {
 /// `pgrep`, `lsof`, `ps`, Warp's sqlite — has already run on `Jumper`'s discovery queue by the
 /// time one of these exists, which is why it has to cross back as a `Sendable` value.
 struct JumpPlan: Equatable, Sendable {
+    /// The two terminals that can only be focused by cwd (#4).
+    ///
+    /// cmux is a Ghostty fork and its scripting dictionary is identical to Ghostty's in every part
+    /// used here — same `terminal` class, same `working directory` property, same top-level
+    /// `focus` command — which is why one AppleScript routine drives both instead of two near
+    /// copies. They differ in exactly one behavior, below.
+    enum CwdFocusApp: String, Equatable, Sendable {
+        case ghostty
+        case cmux
+
+        var bundleIdentifier: String {
+            switch self {
+            case .ghostty: return "com.mitchellh.ghostty"
+            case .cmux: return "com.cmuxterm.app"
+            }
+        }
+
+        /// Whether failing to find a matching surface still counts as a handled jump.
+        ///
+        /// cmux keeps the floor it has had since #3: bring cmux itself to the front. Letting a
+        /// miss fall through to `openNewTab` would surface an *iTerm* window instead of the cmux
+        /// app the session actually lives in — a regression, not a fallback. Ghostty never had
+        /// that floor and reopening at the cwd is a reasonable answer there, so its miss stays a
+        /// miss and the existing ladder fires.
+        var activatesOnMiss: Bool { self == .cmux }
+    }
+
     enum Target: Equatable, Sendable {
         /// AppleScript-select the iTerm/Terminal tab holding this tty.
         case focusTTY(String)
+        /// AppleScript-focus the Ghostty or cmux surface sitting at this cwd. Both expose a
+        /// surface's `working directory` and no tty at all, so this is strictly weaker than
+        /// `focusTTY` — see `Jumper.focusTerminalByCwd` (#4).
+        case focusTerminalByCwd(app: CwdFocusApp, cwd: String)
         /// ⌘-digit Warp's tab, located moments ago so a just-opened tab is included.
         case warpTab(Int)
         /// A GUI workspace, not a terminal — Antigravity has no tty to focus at all. `agy <path>`
