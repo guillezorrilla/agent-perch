@@ -55,6 +55,9 @@ final class SessionStore: ObservableObject {
     let codexHome: URL
     let antigravityHome: URL
     let antigravityCLIHome: URL
+    let geminiHome: URL
+    let openCodeDatabaseURL: URL
+    let kiroHome: URL
     private let sources: [AgentSessionSource]
     private let processProvider: () -> [ClaudeProcess]
     private let terminalResolver: TerminalNameResolver
@@ -75,6 +78,12 @@ final class SessionStore: ObservableObject {
         codexHome: URL = CodexSessionSource.defaultCodexHome(),
         antigravityHome: URL = AntigravitySessionSource.defaultAntigravityHome(),
         antigravityCLIHome: URL = AntigravityCLISessionSource.defaultAntigravityCLIHome(),
+        // Injectable for the same reason every home above is: a test that builds the DEFAULT source
+        // list must be able to point all of it at its own temporary directories, or the suite ends
+        // up reading whatever real agent state happens to be on the machine running it (#11).
+        geminiHome: URL = GeminiSessionSource.defaultGeminiHome(),
+        openCodeDatabaseURL: URL = OpenCodeSessionSource.defaultDatabaseURL(),
+        kiroHome: URL = KiroSessionSource.defaultKiroHome(),
         sources: [AgentSessionSource]? = nil,
         fileManager: FileManager = .default,
         // Non-blocking by default: reconciling happens on the main actor on every hook event, and
@@ -88,6 +97,9 @@ final class SessionStore: ObservableObject {
         self.codexHome = codexHome
         self.antigravityHome = antigravityHome
         self.antigravityCLIHome = antigravityCLIHome
+        self.geminiHome = geminiHome
+        self.openCodeDatabaseURL = openCodeDatabaseURL
+        self.kiroHome = kiroHome
         self.sources = sources ?? [
             ClaudeSessionSource(projectsDirectory: projectsDirectory, fileManager: fileManager),
             // Shares this same process listing rather than defaulting to its own — one
@@ -106,7 +118,22 @@ final class SessionStore: ObservableObject {
                 antigravityCLIHome: antigravityCLIHome,
                 fileManager: fileManager,
                 processProvider: processProvider
-            )
+            ),
+            // The three agents added by #11. Each one shares this same process listing for the
+            // reason Codex's does, and each is written so that a missing directory, an unreadable
+            // database or a schema that turns out not to match simply contributes no rows — a new
+            // agent must never be able to take the list down with it.
+            GeminiSessionSource(
+                geminiHome: geminiHome,
+                fileManager: fileManager,
+                processProvider: processProvider
+            ),
+            OpenCodeSessionSource(
+                databaseURL: openCodeDatabaseURL,
+                fileManager: fileManager,
+                processProvider: processProvider
+            ),
+            KiroSessionSource(kiroHome: kiroHome, fileManager: fileManager, processProvider: processProvider)
         ]
         self.processProvider = processProvider
         self.terminalResolver = terminalResolver
