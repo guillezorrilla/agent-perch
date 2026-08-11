@@ -104,6 +104,68 @@ final class ActionInjectorTests: XCTestCase {
         )
     }
 
+    // A session whose tty never reached us — Claude Code spawns its hooks detached from the
+    // controlling terminal, so the hook reports `??` and it is dropped — was jumpable and
+    // unanswerable (#48). Jump's own fallback is the tty of a shell still sitting at the cwd, and
+    // the plan a recovered tty produces must be indistinguishable from a reported one's.
+    func testARecoveredTTYProducesTheSamePlanAsAReportedOne() {
+        for terminal in ["iTerm", "iTerm2"] {
+            XCTAssertEqual(
+                ActionInjector.plan(
+                    for: session(tty: nil, cwd: "/repo", terminalName: terminal),
+                    key: .text("1"),
+                    recoverTTY: { _ in "ttys027" }
+                ),
+                ActionInjector.plan(terminalName: terminal, tty: "ttys027", cwd: "/repo", decision: .allow)
+            )
+        }
+        XCTAssertEqual(
+            ActionInjector.plan(
+                for: session(tty: nil, cwd: "/repo", terminalName: nil),
+                key: .escape,
+                recoverTTY: { _ in "ttys027" }
+            ),
+            ActionInjector.plan(terminalName: nil, tty: "ttys027", cwd: "/repo", decision: .deny)
+        )
+    }
+
+    // The tty-addressed terminals that are NOT `Jumper.canExactFocus`: a tty recovered from a cwd
+    // would name a sibling pane or window, so neither is offered one and both keep refusing (#42).
+    func testWezTermAndKittyAreNeverGivenACwdRecoveredTTY() {
+        var recoveries = 0
+
+        for terminal in ["WezTerm", "Kitty"] {
+            XCTAssertNil(
+                ActionInjector.plan(
+                    for: session(tty: nil, cwd: "/repo", terminalName: terminal),
+                    key: .text("1"),
+                    recoverTTY: { _ in recoveries += 1; return "ttys027" }
+                )
+            )
+        }
+        XCTAssertEqual(recoveries, 0)
+    }
+
+    private func session(tty: String?, cwd: String, terminalName: String?) -> AgentSession {
+        AgentSession(
+            sessionId: "session-1",
+            agentName: "Claude",
+            cwd: cwd,
+            modifiedAt: Date(),
+            status: .needsAction,
+            jumpRung: .newTab,
+            title: "",
+            lastPrompt: nil,
+            tty: tty,
+            terminalName: terminalName,
+            currentActivity: nil,
+            notificationMessage: nil,
+            pendingToolName: nil,
+            pendingToolInput: nil,
+            resumeCommand: nil
+        )
+    }
+
     func testSupportedTerminalsMapOptionDigitsToTextKeystrokes() {
         for number in 1...9 {
             let digit = String(number)
