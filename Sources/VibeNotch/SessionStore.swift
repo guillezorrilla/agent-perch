@@ -76,6 +76,13 @@ final class SessionStore: ObservableObject {
     /// each transcript has grown by since the last look, and throttles itself — see
     /// `TranscriptTokenTally` (#15).
     private let tokenTally = TranscriptTokenTally()
+    /// Which rows nothing is running behind any more, and for how long — see `SessionRetirement`.
+    /// A transcript is proof of a session that EXISTED; only the process table says one still does
+    /// (#46).
+    private var retirement = SessionRetirement()
+    /// The one delayed reconcile a pass with rows on their way out schedules for itself, so a
+    /// dead row still ages out on a machine where nothing is left to generate an event (#46).
+    private var retirementSweep: Task<Void, Never>?
 
     init(
         projectsDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
@@ -474,7 +481,12 @@ final class SessionStore: ObservableObject {
             sessions.map { ($0.sessionId, $0.terminalName) },
             uniquingKeysWith: { first, _ in first }
         )
-        sessions = ids.compactMap { sessionID -> AgentSession? in
+        // Sessions the hooks have SEEN end, whatever the transcript's mtime says afterwards. The
+        // guard below stands down when a file write lands after the hook, which is the right call
+        // for a resumed session and the wrong one for a last flush on the way out — so the end is
+        // carried past it and combined with process absence instead (#46).
+        let endedSessionIDs = Set(hookStates.filter { $0.value.status == .ended }.keys)
+        let rows = ids.compactMap { sessionID -> AgentSession? in
             let discovered = discoveredSessions[sessionID]
             let agentName = discovered?.agentName ?? "Claude"
             // Hook events are Claude-only — a Codex (or future-agent) session must never pick
@@ -555,15 +567,43 @@ final class SessionStore: ObservableObject {
                 supportsLiveStatus: discovered?.supportsLiveStatus ?? true,
                 progress: progress
             )
-        }.sorted {
-            if ($0.status == .needsAction) != ($1.status == .needsAction) {
-                return $0.status == .needsAction
-            }
-            return $0.modifiedAt > $1.modifiedAt
-        }.prefix(10).map { $0 }
+        }
+
+        // Retirement, duplicate collapsing and ordering all turn on one question this loop has
+        // already answered for the jump rung — is anything still running behind this row — so they
+        // are asked together, before the cap, or four dead rows for one folder could crowd a live
+        // session out of the ten (#46).
+        sessions = retirement.rank(
+            rows,
+            processes: processes,
+            endedSessionIDs: endedSessionIDs,
+            now: now
+        ).prefix(10).map { $0 }
+        scheduleRetirementSweep(after: retirement.nextRetirementDelay, from: now)
 
         tokenTally.retain(sessionIDs: Set(sessions.map(\.sessionId)))
         resolveTerminalNames(for: unresolvedPIDs)
+    }
+
+    /// One delayed reconcile per pass, for the rows on their way out.
+    ///
+    /// Reconciling is otherwise entirely event-driven — hook events, transcript writes, process
+    /// rescans — and the moment every session on the machine has exited, all three stop. Without
+    /// this the last row would sit there until something unrelated happened to poke the store
+    /// (#46). Reconciles on the clock the scheduling pass used rather than on `Date()`, so a test
+    /// driving a fixed `now` cannot have a real-time sweep land on a different timeline than the
+    /// one it is asserting about; in the app the two are the same to within the scheduling jitter.
+    private func scheduleRetirementSweep(after delay: TimeInterval?, from now: Date) {
+        retirementSweep?.cancel()
+        guard let delay else {
+            retirementSweep = nil
+            return
+        }
+        retirementSweep = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled else { return }
+            self?.reconcile(now: now.addingTimeInterval(delay))
+        }
     }
 
     /// Which terminal a card shows this pass, and whether a background ancestry walk has to be
