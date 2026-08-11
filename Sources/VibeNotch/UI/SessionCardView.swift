@@ -33,6 +33,12 @@ struct FeaturedSessionCard: View {
                     }
 
                     statusLine
+
+                    // Below the status line rather than instead of it: the status line is the
+                    // headline ("Reading Foo.swift"), this is what the turn has cost and the
+                    // trail behind it. It draws nothing when there is nothing to draw, so an idle
+                    // or hookless card stays exactly as tall as it was before (#15).
+                    SessionProgressView(progress: session.progress)
                 }
 
                 Spacer(minLength: 10)

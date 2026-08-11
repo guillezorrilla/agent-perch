@@ -154,7 +154,9 @@ extension UsageProviderTests {
     private final class StubToken: UsageTokenSource {
         func accessToken() -> String? { "tok" }
     }
-    private final class StubLoader: UsageLoading {
+    // `@unchecked` since `UsageSource` and friends became `Sendable` for the concurrent refresh
+    // (#18): these doubles mutate freely, and each test drives exactly one at a time.
+    private final class StubLoader: UsageLoading, @unchecked Sendable {
         var status: Int
         var body: Data
         private(set) var calls = 0
@@ -216,7 +218,7 @@ extension UsageProviderTests {
 }
 
 extension UsageProviderTests {
-    private final class StubUsageSource: UsageSource {
+    private final class StubUsageSource: UsageSource, @unchecked Sendable {
         let name: String
         var available: Bool
         var results: [Result<ProviderUsage, Error>]

@@ -321,23 +321,44 @@ struct UsageStripView: View {
         .padding(.horizontal, 4)
     }
 
-    @ViewBuilder
     private func providerRow(_ usage: ProviderUsage) -> some View {
-        HStack(spacing: 7) {
+        let lines = windowLines(usage.windows)
+        return HStack(alignment: .top, spacing: 7) {
             Text(glyph(for: usage.provider))
                 .foregroundStyle(.white)
             Text(usage.provider)
                 .foregroundStyle(Color.vibeGray)
                 .frame(minWidth: 44, alignment: .leading)
-            ForEach(Array(usage.windows.enumerated()), id: \.offset) { index, window in
-                if index > 0 {
-                    Text("|")
-                        .foregroundStyle(Color.vibeGray.opacity(0.65))
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(Array(lines.enumerated()), id: \.offset) { index, line in
+                    HStack(spacing: 7) {
+                        ForEach(Array(line.enumerated()), id: \.offset) { position, window in
+                            if position > 0 {
+                                Text("|")
+                                    .foregroundStyle(Color.vibeGray.opacity(0.65))
+                            }
+                            windowView(window)
+                        }
+                        if index == lines.count - 1, let detail = usage.detail {
+                            Text("·")
+                                .foregroundStyle(Color.vibeGray.opacity(0.65))
+                            Text(detail)
+                                .foregroundStyle(Color.vibeGray)
+                        }
+                    }
+                    .lineLimit(1)
                 }
-                windowView(window)
             }
         }
-        .lineLimit(1)
+    }
+
+    /// Two windows to a line. Claude and Codex have at most two and are untouched; Antigravity
+    /// meters four at once, and four on one line runs off the end of the panel (#18).
+    private func windowLines(_ windows: [UsageWindow]) -> [[UsageWindow]] {
+        guard !windows.isEmpty else { return [] }
+        return stride(from: 0, to: windows.count, by: 2).map {
+            Array(windows[$0..<min($0 + 2, windows.count)])
+        }
     }
 
     /// A provider whose credentials or endpoint let us down keeps its place in the strip and says
@@ -363,8 +384,16 @@ struct UsageStripView: View {
     private func windowView(_ window: UsageWindow) -> some View {
         Text(window.label)
             .foregroundStyle(Color.vibeGray)
-        Text("\(Int(window.utilization.rounded()))%")
+        // The leading "~" is the whole promise this strip makes about an estimate: Kiro calls its
+        // own figure "Estimated Usage", so it is never rendered as if it were metered quota (#18).
+        Text("\(window.isEstimate ? "~" : "")\(Int(window.utilization.rounded()))%")
             .foregroundStyle(color(for: window.level))
+            .help(window.isEstimate ? "Provider-reported estimate, not metered quota" : "Reported usage")
+        if let reserve = window.reserve {
+            Text("+\(Int(reserve.rounded()))%r")
+                .foregroundStyle(Color.vibeGray)
+                .help("Held in reserve beyond this window")
+        }
         Text(window.resetText())
             .foregroundStyle(Color.vibeGray)
     }
@@ -373,6 +402,9 @@ struct UsageStripView: View {
         switch provider {
         case "Claude": "✦"
         case "Codex": "◆"
+        case "Antigravity": "▲"
+        case "Gemini": "✧"
+        case "Kiro": "◈"
         default: "●"
         }
     }

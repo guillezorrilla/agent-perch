@@ -71,6 +71,10 @@ final class SessionStore: ObservableObject {
     /// Pids whose terminal is being resolved in the background right now, so the reconcile that
     /// resolution triggers doesn't ask for the same walk a second time.
     private var resolvingTerminalNamePIDs: Set<Int32> = []
+    /// The one thing on a card that hooks cannot report: cumulative tokens. Reads only the bytes
+    /// each transcript has grown by since the last look, and throttles itself — see
+    /// `TranscriptTokenTally` (#15).
+    private let tokenTally = TranscriptTokenTally()
 
     init(
         projectsDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
@@ -185,7 +189,8 @@ final class SessionStore: ObservableObject {
             currentActivity: nil,
             notificationMessage: nil,
             pendingToolName: nil,
-            pendingToolInput: nil
+            pendingToolInput: nil,
+            progress: SessionProgress()
         )
         state.updatedAt = event.timestamp
         state.cwd = event.cwd ?? state.cwd
@@ -270,6 +275,11 @@ final class SessionStore: ObservableObject {
         default:
             break
         }
+
+        // Folded here, one event at a time, rather than derived from the transcript: this is the
+        // same event stream the activity line already runs on, so the step trail costs a struct
+        // append and nothing else (#15).
+        state.progress.apply(event)
 
         hookStates[sessionID] = state
         reconcile(now: now)
@@ -499,6 +509,15 @@ final class SessionStore: ObservableObject {
             )
             let jumpRung = Jumper.rung(for: target)
 
+            // Hook-derived and therefore Claude-only, exactly like `currentActivity`: a hookless
+            // agent has no step stream and no turn boundary to time, so its card shows no panel
+            // at all rather than a half-empty one (#15, #31). The token half is bolted on here
+            // because it is the only part the hooks can't supply.
+            var progress = hook?.progress ?? SessionProgress()
+            if hook != nil, let transcript = discovered?.sessionFileURL {
+                progress.tokens = tokenTally.tokens(forSessionID: sessionID, transcript: transcript)
+            }
+
             return AgentSession(
                 sessionId: sessionID,
                 agentName: agentName,
@@ -530,7 +549,8 @@ final class SessionStore: ObservableObject {
                 pendingToolName: hook?.pendingToolName,
                 pendingToolInput: hook?.pendingToolInput,
                 resumeCommand: discovered?.resumeCommand,
-                supportsLiveStatus: discovered?.supportsLiveStatus ?? true
+                supportsLiveStatus: discovered?.supportsLiveStatus ?? true,
+                progress: progress
             )
         }.sorted {
             if ($0.status == .needsAction) != ($1.status == .needsAction) {
@@ -539,6 +559,7 @@ final class SessionStore: ObservableObject {
             return $0.modifiedAt > $1.modifiedAt
         }.prefix(10).map { $0 }
 
+        tokenTally.retain(sessionIDs: Set(sessions.map(\.sessionId)))
         resolveTerminalNames(for: unresolvedPIDs)
     }
 
@@ -575,5 +596,6 @@ final class SessionStore: ObservableObject {
         var notificationMessage: String?
         var pendingToolName: String?
         var pendingToolInput: JSONValue?
+        var progress: SessionProgress
     }
 }
