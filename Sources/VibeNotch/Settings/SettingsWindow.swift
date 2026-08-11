@@ -115,6 +115,18 @@ struct SettingsView: View {
                 }
             }
 
+            Section("Cursor") {
+                VStack(alignment: .leading, spacing: 4) {
+                    Toggle("Show Cursor workspaces", isOn: Binding(
+                        get: { settings.showCursorWorkspaces },
+                        set: { settings.showCursorWorkspaces = $0 }
+                    ))
+                    Text("Shows recently-opened Cursor workspaces — not agent sessions, since Cursor keeps its chat state in a format this app doesn't read. Off by default.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             Section("Claude hooks") {
                 HStack {
                     Circle()

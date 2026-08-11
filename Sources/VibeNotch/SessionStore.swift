@@ -58,6 +58,7 @@ final class SessionStore: ObservableObject {
     let geminiHome: URL
     let openCodeDatabaseURL: URL
     let kiroHome: URL
+    let cursorHome: URL
     private let sources: [AgentSessionSource]
     private let processProvider: () -> [ClaudeProcess]
     private let terminalResolver: TerminalNameResolver
@@ -88,6 +89,7 @@ final class SessionStore: ObservableObject {
         geminiHome: URL = GeminiSessionSource.defaultGeminiHome(),
         openCodeDatabaseURL: URL = OpenCodeSessionSource.defaultDatabaseURL(),
         kiroHome: URL = KiroSessionSource.defaultKiroHome(),
+        cursorHome: URL = CursorSessionSource.defaultCursorHome(),
         sources: [AgentSessionSource]? = nil,
         fileManager: FileManager = .default,
         // Non-blocking by default: reconciling happens on the main actor on every hook event, and
@@ -104,6 +106,7 @@ final class SessionStore: ObservableObject {
         self.geminiHome = geminiHome
         self.openCodeDatabaseURL = openCodeDatabaseURL
         self.kiroHome = kiroHome
+        self.cursorHome = cursorHome
         self.sources = sources ?? [
             ClaudeSessionSource(projectsDirectory: projectsDirectory, fileManager: fileManager),
             // Shares this same process listing rather than defaulting to its own — one
@@ -137,7 +140,13 @@ final class SessionStore: ObservableObject {
                 fileManager: fileManager,
                 processProvider: processProvider
             ),
-            KiroSessionSource(kiroHome: kiroHome, fileManager: fileManager, processProvider: processProvider)
+            KiroSessionSource(kiroHome: kiroHome, fileManager: fileManager, processProvider: processProvider),
+            // Cursor IDE workspaces, not agent turns — the same thing `AntigravitySessionSource`
+            // contributes, gated the same way behind `showCursorWorkspaces` and capped at `.idle`
+            // for the same reason (#11). Needs no process table: an Electron app's own process cwd
+            // is its Resources directory, so per-workspace attribution by process was never
+            // possible, and Cursor has no CLI-session counterpart here to dedup against.
+            CursorSessionSource(cursorHome: cursorHome, fileManager: fileManager)
         ]
         self.processProvider = processProvider
         self.terminalResolver = terminalResolver
@@ -492,15 +501,14 @@ final class SessionStore: ObservableObject {
             // terminal pill: the session's own tty first, then a process that names the session,
             // and only then anything that merely shares the cwd (#23).
             //
-            // An Antigravity IDE-workspace row is a GUI folder, never a terminal — resolving it
-            // against the process table risks matching an unrelated Claude/Codex CLI process
-            // that merely shares this workspace's cwd, which would wrongly imply a terminal pill
-            // and an exact-focus rung neither exists for it (#3). A real `agy` CLI session
-            // (same `agentName`, different `sessionId` prefix) is NOT shortcut here — it behaves
-            // exactly like Claude/Codex (#29).
-            let isAntigravityWorkspace = agentName == "Antigravity"
-                && AntigravitySessionSource.isWorkspaceSessionId(sessionID)
-            let target = isAntigravityWorkspace ? JumpTarget.unresolved : JumpTarget.resolve(
+            // An IDE-workspace row (Antigravity, Cursor) is a GUI folder, never a terminal —
+            // resolving it against the process table risks matching an unrelated Claude/Codex CLI
+            // process that merely shares this workspace's cwd, which would wrongly imply a
+            // terminal pill and an exact-focus rung neither exists for it (#3, #11). A real `agy`
+            // CLI session (same `agentName`, different `sessionId` prefix) is NOT shortcut here —
+            // it behaves exactly like Claude/Codex (#29).
+            let isIDEWorkspace = AgentSession.workspaceIDE(agentName: agentName, sessionId: sessionID) != nil
+            let target = isIDEWorkspace ? JumpTarget.unresolved : JumpTarget.resolve(
                 agentName: agentName,
                 sessionId: sessionID,
                 tty: tty,
