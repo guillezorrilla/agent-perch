@@ -21,11 +21,11 @@ struct TTYResolver {
     /// main thread behind a click (#23). `lsof` and `ps` both take a comma-separated pid list, so
     /// one call each now answers for every candidate.
     ///
-    /// pgrep's `-f` pattern is an extended regex, so "claude|codex" matches either binary's
-    /// command line in one call; each candidate line is still re-validated by the agent-specific
-    /// CLI check.
+    /// pgrep's `-f` pattern is an extended regex, so "claude|codex|agy|antigravity" matches any
+    /// of those binaries' command lines in one call; each candidate line is still re-validated by
+    /// the agent-specific CLI check.
     func processes() -> [ClaudeProcess] {
-        guard let listing = Self.output("/usr/bin/pgrep", ["-fl", "claude|codex"]) else {
+        guard let listing = Self.output("/usr/bin/pgrep", ["-fl", "claude|codex|agy|antigravity"]) else {
             return []
         }
 
@@ -33,7 +33,9 @@ struct TTYResolver {
             let fields = line.split(maxSplits: 1, whereSeparator: \.isWhitespace)
             guard fields.count == 2, let pid = Int32(fields[0]) else { return nil }
             let command = String(fields[1])
-            guard Self.isClaudeCLI(command: command) || Self.isCodexCLI(command: command) else {
+            guard Self.isClaudeCLI(command: command)
+                || Self.isCodexCLI(command: command)
+                || Self.isAntigravityCLI(command: command) else {
                 return nil
             }
             return Candidate(pid: pid, command: command)
@@ -70,6 +72,7 @@ struct TTYResolver {
     static func isAgentCLI(_ agentName: String, command: String) -> Bool {
         switch agentName {
         case "Codex": return isCodexCLI(command: command)
+        case "Antigravity": return isAntigravityCLI(command: command)
         default: return isClaudeCLI(command: command)
         }
     }
@@ -105,6 +108,21 @@ struct TTYResolver {
         let executable = command.split(whereSeparator: \.isWhitespace).first.map(String.init) ?? ""
         let executableName = URL(fileURLWithPath: executable).lastPathComponent
         return executableName == "codex"
+    }
+
+    // `agy` — Antigravity's own terminal CLI (#29) — is a real interactive session, unlike the
+    // Electron IDE app `AntigravityProcessCheck` already rejects by BUNDLE PATH. Excluded here
+    // the same way: a command line running out of either bundle is the IDE's own process, never
+    // this CLI, even though both happen to share the word "antigravity".
+    static func isAntigravityCLI(command: String) -> Bool {
+        let command = command.lowercased()
+        guard command.contains("agy") || command.contains("antigravity"),
+              !command.contains("antigravity ide.app/"),
+              !command.contains("antigravity.app/") else { return false }
+
+        let executable = command.split(whereSeparator: \.isWhitespace).first.map(String.init) ?? ""
+        let executableName = URL(fileURLWithPath: executable).lastPathComponent
+        return executableName == "agy" || executableName == "antigravity"
     }
 
     // Fallback when no live agent process matches: any shell sitting at the session's cwd (the

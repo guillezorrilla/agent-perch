@@ -133,27 +133,42 @@ enum CodexSessionOrigin: Equatable, Sendable {
     }
 }
 
-/// Bounded discovery of rollout files under `$CODEX_HOME/sessions/YYYY/MM/DD/`. A full
-/// recursive walk of `sessions/**` costs one stat per rollout a power user has ever written —
-/// years of Codex usage can mean tens of thousands. A session can only be `.active`/`.idle`
-/// (see `CodexLiveness`) if it was touched within the last hour, so today's and yesterday's
-/// date directories (named for `now`, not file mtime — a session started yesterday and still
-/// open today lives in yesterday's folder) already cover everything that could possibly
-/// matter; the newest-N-directories fallback only exists for the rare miss (e.g. the guessed
-/// dates don't exist yet, or the local clock and the directory names disagree about "today").
+/// Bounded discovery of rollout files under `$CODEX_HOME/sessions/YYYY/MM/DD/`.
+///
+/// This used to GUESS at which day directories mattered — today's and yesterday's, by `now`,
+/// falling back to a directory listing only when neither existed. That guess is wrong: a rollout
+/// directory is named for the date its session STARTED, not for when it was last touched, so any
+/// session alive for more than about a day lives in a day directory the guess never looked at —
+/// and since today's/yesterday's directories almost always exist (any OTHER session started
+/// recently creates them), the listing-based fallback essentially never ran either. A real
+/// interactive session left open for a few days was therefore invisible no matter how recently
+/// its rollout file had been appended to (issue #30).
+///
+/// The fix: never guess a date name. Always enumerate which day directories actually exist (still
+/// only three listings deep — year, then month, then day — never a recursive walk of the whole
+/// tree), take the newest `dayDirectoryCount`, and let FILE MTIME (not the directory's date)
+/// decide what counts as fresh. A full recursive walk of `sessions/**` would cost one stat per
+/// rollout a power user has ever written — years of usage can mean tens of thousands — so the day
+/// directory cap is what keeps this cheap: at most `dayDirectoryCount` single-directory listings,
+/// regardless of how much history exists on disk.
 enum CodexRolloutDiscovery {
+    /// How many of the newest day directories to scan. Three weeks comfortably covers any session
+    /// long-running enough to matter (`CodexLiveness`/`SessionStatus.at` already drop anything
+    /// whose rollout hasn't been touched in the last hour) while keeping the listing bounded and
+    /// cheap regardless of how far back `sessions/` actually goes.
+    static let defaultDayDirectoryCount = 21
+
     static func candidateFiles(
         sessionsRoot: URL,
         now: Date,
         fileManager: FileManager,
         maxFiles: Int = 30,
-        fallbackDayDirectoryCount: Int = 7
+        dayDirectoryCount: Int = defaultDayDirectoryCount
     ) -> [URL] {
         let dayDirectories = recentDayDirectories(
             sessionsRoot: sessionsRoot,
-            now: now,
             fileManager: fileManager,
-            fallbackCount: fallbackDayDirectoryCount
+            dayDirectoryCount: dayDirectoryCount
         )
         let files = dayDirectories.flatMap { rolloutFiles(in: $0, fileManager: fileManager) }
         return files
@@ -167,27 +182,18 @@ enum CodexRolloutDiscovery {
         return String(format: "%04d/%02d/%02d", components.year ?? 0, components.month ?? 0, components.day ?? 0)
     }
 
+    /// Every day directory that actually exists, newest first by PATH — `YYYY/MM/DD` components
+    /// sort lexicographically exactly like the dates they name, so a plain string comparison is
+    /// enough — bounded to the newest `dayDirectoryCount` before any rollout file inside them is
+    /// even listed, let alone stat'd for its mtime.
     private static func recentDayDirectories(
         sessionsRoot: URL,
-        now: Date,
         fileManager: FileManager,
-        fallbackCount: Int
+        dayDirectoryCount: Int
     ) -> [URL] {
-        let calendar = Calendar.current
-        let today = calendar.startOfDay(for: now)
-        let yesterday = calendar.date(byAdding: .day, value: -1, to: today) ?? today
-        let direct = [today, yesterday].compactMap { date -> URL? in
-            let url = sessionsRoot.appendingPathComponent(
-                dayDirectoryPath(for: date, calendar: calendar),
-                isDirectory: true
-            )
-            return isDirectory(url, fileManager: fileManager) ? url : nil
-        }
-        guard direct.isEmpty else { return direct }
-
-        return allDayDirectories(sessionsRoot: sessionsRoot, fileManager: fileManager)
+        allDayDirectories(sessionsRoot: sessionsRoot, fileManager: fileManager)
             .sorted { $0.path > $1.path }
-            .prefix(fallbackCount)
+            .prefix(dayDirectoryCount)
             .map { $0 }
     }
 
@@ -217,11 +223,6 @@ enum CodexRolloutDiscovery {
         )) ?? []).filter {
             $0.lastPathComponent.hasPrefix("rollout-") && $0.pathExtension == "jsonl"
         }
-    }
-
-    private static func isDirectory(_ url: URL, fileManager: FileManager) -> Bool {
-        var flag: ObjCBool = false
-        return fileManager.fileExists(atPath: url.path, isDirectory: &flag) && flag.boolValue
     }
 
     private static func modificationDate(of url: URL) -> Date {

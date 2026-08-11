@@ -373,6 +373,7 @@ final class PendingActionStoreTests: XCTestCase {
             projectsDirectory: temporaryDirectory(),
             codexHome: temporaryDirectory(),
             antigravityHome: temporaryDirectory(),
+            antigravityCLIHome: temporaryDirectory(),
             processProvider: { [] }
         )
     }

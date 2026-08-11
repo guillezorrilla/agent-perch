@@ -138,59 +138,32 @@ final class AntigravityRecencyTests: XCTestCase {
     }
 }
 
-/// Mirrors `CodexLivenessTests`: a live process can promote to `.active` regardless of stale
-/// mtime; without one, mtime only gates `.idle` vs. hidden. Antigravity's own addition — only the
-/// most-recently-touched workspace is ever eligible — is exercised here too.
+/// A workspace row is capped at `.idle` — it may never read `.active`, however fresh its mtime
+/// (#29). `SessionStatus`'s usual `< 60 minutes` freshness window still gates `.idle` vs. hidden.
 final class AntigravityLivenessTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 10_000)
 
-    func testActiveOnlyWithProcessRunningAndMostRecent() {
-        XCTAssertEqual(
-            AntigravityLiveness.status(
-                isMostRecentlyTouchedWorkspace: true, processRunning: true, modifiedAt: now, now: now
-            ),
-            .active
-        )
+    func testFreshMtimeIsIdleNeverActive() {
+        // Zero elapsed time is the most suspicious case for accidentally promoting to `.active` —
+        // it must still cap at `.idle`.
+        XCTAssertEqual(AntigravityLiveness.status(modifiedAt: now, now: now), .idle)
     }
 
-    func testProcessRunningButNotTheMostRecentWorkspaceIsIdleNotActive() {
+    func testStillIdleASecondAfterBeingTouched() {
         XCTAssertEqual(
-            AntigravityLiveness.status(
-                isMostRecentlyTouchedWorkspace: false, processRunning: true, modifiedAt: now, now: now
-            ),
+            AntigravityLiveness.status(modifiedAt: now.addingTimeInterval(-1), now: now),
             .idle
         )
     }
 
-    func testMostRecentWorkspaceWithNoLiveProcessIsIdleNotActive() {
+    func testHiddenPastTheFreshnessThreshold() {
+        XCTAssertNil(AntigravityLiveness.status(modifiedAt: now.addingTimeInterval(-3_600), now: now))
+    }
+
+    func testIdleJustInsideTheFreshnessThreshold() {
         XCTAssertEqual(
-            AntigravityLiveness.status(
-                isMostRecentlyTouchedWorkspace: true, processRunning: false, modifiedAt: now, now: now
-            ),
+            AntigravityLiveness.status(modifiedAt: now.addingTimeInterval(-3_599), now: now),
             .idle
-        )
-    }
-
-    func testActiveRegardlessOfStaleMtimeWhenProcessRunningAndMostRecent() {
-        XCTAssertEqual(
-            AntigravityLiveness.status(
-                isMostRecentlyTouchedWorkspace: true,
-                processRunning: true,
-                modifiedAt: now.addingTimeInterval(-10_000),
-                now: now
-            ),
-            .active
-        )
-    }
-
-    func testHiddenPastTheThresholdWithoutALiveProcess() {
-        XCTAssertNil(
-            AntigravityLiveness.status(
-                isMostRecentlyTouchedWorkspace: true,
-                processRunning: false,
-                modifiedAt: now.addingTimeInterval(-3_600),
-                now: now
-            )
         )
     }
 }
@@ -262,7 +235,6 @@ final class AntigravitySessionSourceTests: XCTestCase {
 
         let discovered = AntigravitySessionSource(
             antigravityHome: home,
-            isRunningProvider: { false },
             agyAvailableProvider: { false },
             showWorkspaces: { true }
         ).discover(now: fixedNow)
@@ -270,7 +242,9 @@ final class AntigravitySessionSourceTests: XCTestCase {
         let session = try XCTUnwrap(discovered.first)
         XCTAssertEqual(session.agentName, "Antigravity")
         XCTAssertEqual(session.cwd, "/Users/me/project")
-        XCTAssertEqual(session.title, "project")
+        // Every title carries the "— workspace" qualifier (#29): a compact row (the only shape
+        // one of these is ever allowed to take) has no secondary text line to say so instead.
+        XCTAssertEqual(session.title, "project — workspace")
         XCTAssertEqual(session.sessionId, "antigravity:abc123")
         XCTAssertNil(session.sessionFileURL)
     }
@@ -291,7 +265,6 @@ final class AntigravitySessionSourceTests: XCTestCase {
 
         let discovered = AntigravitySessionSource(
             antigravityHome: home,
-            isRunningProvider: { false },
             agyAvailableProvider: { false },
             showWorkspaces: { true }
         ).discover(now: fixedNow)
@@ -299,21 +272,21 @@ final class AntigravitySessionSourceTests: XCTestCase {
         XCTAssertEqual(discovered.map(\.cwd), ["/Users/me/kept"])
     }
 
-    func testTitleIsTheFolderBasenameWithWordBoundaryTruncation() throws {
+    func testTitleIsTheFolderBasenamePlusAWorkspaceQualifierWithWordBoundaryTruncation() throws {
         let home = try makeTemporaryDirectory()
         let longName = Array(repeating: "word", count: 20).joined(separator: "-")
         try makeWorkspace(in: home, hash: "abc", folderPath: "/Users/me/\(longName)", ageSeconds: 60)
 
         let discovered = AntigravitySessionSource(
             antigravityHome: home,
-            isRunningProvider: { false },
             agyAvailableProvider: { false },
             showWorkspaces: { true }
         ).discover(now: fixedNow)
 
         let title = try XCTUnwrap(discovered.first?.title)
-        XCTAssertEqual(title, SessionTitle.truncate(longName, max: 60))
-        XCTAssertLessThan(title.count, longName.count)
+        XCTAssertTrue(title.hasSuffix("— workspace"))
+        XCTAssertLessThan(title.count, longName.count + " — workspace".count)
+        XCTAssertLessThanOrEqual(title.count, 60)
     }
 
     func testResumeCommandPresentOnlyWhenAgyIsAvailable() throws {
@@ -322,7 +295,6 @@ final class AntigravitySessionSourceTests: XCTestCase {
 
         let withAgy = AntigravitySessionSource(
             antigravityHome: home,
-            isRunningProvider: { false },
             agyAvailableProvider: { true },
             showWorkspaces: { true }
         ).discover(now: fixedNow)
@@ -330,20 +302,18 @@ final class AntigravitySessionSourceTests: XCTestCase {
 
         let withoutAgy = AntigravitySessionSource(
             antigravityHome: home,
-            isRunningProvider: { false },
             agyAvailableProvider: { false },
             showWorkspaces: { true }
         ).discover(now: fixedNow)
         XCTAssertNil(withoutAgy.first?.resumeCommand)
     }
 
-    func testNoLiveProcessNeverMarksActiveEvenAsTheOnlyFreshWorkspace() throws {
+    func testAFreshWorkspaceIsIdleNeverActive() throws {
         let home = try makeTemporaryDirectory()
         try makeWorkspace(in: home, hash: "abc", folderPath: "/Users/me/project", ageSeconds: 30)
 
         let discovered = AntigravitySessionSource(
             antigravityHome: home,
-            isRunningProvider: { false },
             agyAvailableProvider: { false },
             showWorkspaces: { true }
         ).discover(now: fixedNow)
@@ -351,21 +321,22 @@ final class AntigravitySessionSourceTests: XCTestCase {
         XCTAssertEqual(discovered.first?.status, .idle)
     }
 
-    func testOnlyTheMostRecentlyTouchedWorkspaceCanBeActiveWhileAProcessRuns() throws {
+    /// A workspace row must never present as active work — not even the single most-recently
+    /// touched one — regardless of how fresh it is (#29, follow-up to #27: capped in the source,
+    /// not merely hidden by the view).
+    func testNoWorkspaceIsEverActiveRegardlessOfRecency() throws {
         let home = try makeTemporaryDirectory()
         try makeWorkspace(in: home, hash: "recent", folderPath: "/Users/me/recent", ageSeconds: 30)
         try makeWorkspace(in: home, hash: "older", folderPath: "/Users/me/older", ageSeconds: 600)
 
         let discovered = AntigravitySessionSource(
             antigravityHome: home,
-            isRunningProvider: { true },
             agyAvailableProvider: { false },
             showWorkspaces: { true }
         ).discover(now: fixedNow)
 
-        let statusByPath = Dictionary(uniqueKeysWithValues: discovered.map { ($0.cwd, $0.status) })
-        XCTAssertEqual(statusByPath["/Users/me/recent"], .active)
-        XCTAssertEqual(statusByPath["/Users/me/older"], .idle)
+        XCTAssertEqual(discovered.count, 2)
+        XCTAssertTrue(discovered.allSatisfy { $0.status == .idle })
     }
 
     func testHiddenThresholdDropsAStaleWorkspaceWithoutALiveProcess() throws {
@@ -374,7 +345,6 @@ final class AntigravitySessionSourceTests: XCTestCase {
 
         let discovered = AntigravitySessionSource(
             antigravityHome: home,
-            isRunningProvider: { false },
             agyAvailableProvider: { false },
             showWorkspaces: { true }
         ).discover(now: fixedNow)
@@ -400,7 +370,6 @@ final class AntigravitySessionSourceTests: XCTestCase {
 
         let discovered = AntigravitySessionSource(
             antigravityHome: home,
-            isRunningProvider: { false },
             agyAvailableProvider: { false },
             showWorkspaces: { true }
         ).discover(now: fixedNow)
@@ -415,7 +384,6 @@ final class AntigravitySessionSourceTests: XCTestCase {
 
         let discovered = AntigravitySessionSource(
             antigravityHome: home,
-            isRunningProvider: { false },
             agyAvailableProvider: { false },
             showWorkspaces: { true }
         ).discover(now: fixedNow)
@@ -427,7 +395,6 @@ final class AntigravitySessionSourceTests: XCTestCase {
         XCTAssertTrue(
             AntigravitySessionSource(
                 antigravityHome: URL(fileURLWithPath: "/nonexistent/Antigravity IDE"),
-                isRunningProvider: { true },
                 agyAvailableProvider: { true },
                 showWorkspaces: { true }
             ).discover(now: fixedNow).isEmpty
@@ -444,7 +411,6 @@ final class AntigravitySessionSourceTests: XCTestCase {
 
         let discovered = AntigravitySessionSource(
             antigravityHome: home,
-            isRunningProvider: { XCTFail("must not probe for a process when opted out"); return true },
             agyAvailableProvider: { XCTFail("must not probe for agy when opted out"); return true },
             showWorkspaces: { false }
         ).discover(now: fixedNow)
@@ -476,7 +442,6 @@ final class AntigravitySessionSourceTests: XCTestCase {
         _ = AntigravitySessionSource(
             antigravityHome: home,
             fileManager: fileManager,
-            isRunningProvider: { false },
             agyAvailableProvider: { false },
             showWorkspaces: { false }
         ).discover(now: fixedNow)
@@ -484,24 +449,9 @@ final class AntigravitySessionSourceTests: XCTestCase {
         XCTAssertEqual(fileManager.listings, 0)
     }
 
-    /// Opted IN but with nothing running: rows may show, but none of them may claim to be active.
-    func testOptedInWithNoProcessRunningMarksNothingActive() throws {
-        let home = try makeTemporaryDirectory()
-        try makeWorkspace(in: home, hash: "a", folderPath: "/Users/me/a", ageSeconds: 30)
-        try makeWorkspace(in: home, hash: "b", folderPath: "/Users/me/b", ageSeconds: 90)
-
-        let discovered = AntigravitySessionSource(
-            antigravityHome: home,
-            isRunningProvider: { false },
-            agyAvailableProvider: { false },
-            showWorkspaces: { true }
-        ).discover(now: fixedNow)
-
-        XCTAssertEqual(discovered.count, 2)
-        XCTAssertFalse(discovered.contains { $0.status == .active })
-    }
-
-    func testOptedInWithAProcessRunningMarksAtMostOneActive() throws {
+    /// Opted IN: rows may show, but none of them may EVER claim to be active — regardless of how
+    /// many there are or how fresh (#29).
+    func testOptedInNeverMarksAnythingActive() throws {
         let home = try makeTemporaryDirectory()
         try makeWorkspace(in: home, hash: "a", folderPath: "/Users/me/a", ageSeconds: 30)
         try makeWorkspace(in: home, hash: "b", folderPath: "/Users/me/b", ageSeconds: 90)
@@ -509,13 +459,12 @@ final class AntigravitySessionSourceTests: XCTestCase {
 
         let discovered = AntigravitySessionSource(
             antigravityHome: home,
-            isRunningProvider: { true },
             agyAvailableProvider: { false },
             showWorkspaces: { true }
         ).discover(now: fixedNow)
 
         XCTAssertEqual(discovered.count, 3)
-        XCTAssertEqual(discovered.filter { $0.status == .active }.count, 1)
+        XCTAssertTrue(discovered.allSatisfy { $0.status == .idle })
     }
 
     // MARK: - Fixtures

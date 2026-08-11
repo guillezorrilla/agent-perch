@@ -88,7 +88,7 @@ struct SettingsView: View {
                         get: { settings.showAntigravityWorkspaces },
                         set: { settings.showAntigravityWorkspaces = $0 }
                     ))
-                    Text("Antigravity keeps no per-agent state on disk, so these are folders the IDE has open — not agent turns. Off by default.")
+                    Text("Shows recently-opened Antigravity IDE workspaces — not agent sessions, since Antigravity keeps no per-agent state on disk. Off by default. Antigravity CLI (agy) sessions are always shown, regardless of this setting.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

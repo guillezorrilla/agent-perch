@@ -29,6 +29,7 @@ final class SessionStore: ObservableObject {
     let projectsDirectory: URL
     let codexHome: URL
     let antigravityHome: URL
+    let antigravityCLIHome: URL
     private let sources: [AgentSessionSource]
     private let processProvider: () -> [ClaudeProcess]
     private let terminalResolver: TerminalNameResolver
@@ -41,6 +42,7 @@ final class SessionStore: ObservableObject {
             .appendingPathComponent(".claude/projects", isDirectory: true),
         codexHome: URL = CodexSessionSource.defaultCodexHome(),
         antigravityHome: URL = AntigravitySessionSource.defaultAntigravityHome(),
+        antigravityCLIHome: URL = AntigravityCLISessionSource.defaultAntigravityCLIHome(),
         sources: [AgentSessionSource]? = nil,
         fileManager: FileManager = .default,
         processProvider: @escaping () -> [ClaudeProcess] = { ProcessTableCache.shared.processes() },
@@ -49,6 +51,7 @@ final class SessionStore: ObservableObject {
         self.projectsDirectory = projectsDirectory
         self.codexHome = codexHome
         self.antigravityHome = antigravityHome
+        self.antigravityCLIHome = antigravityCLIHome
         self.sources = sources ?? [
             ClaudeSessionSource(projectsDirectory: projectsDirectory, fileManager: fileManager),
             // Shares this same process listing rather than defaulting to its own — one
@@ -57,10 +60,17 @@ final class SessionStore: ObservableObject {
             // now literally so: the default provider is a shared, briefly-cached snapshot that a
             // click reuses instead of rescanning (#23).
             CodexSessionSource(codexHome: codexHome, fileManager: fileManager, processProvider: processProvider),
-            // Antigravity workspaces, not agent turns — see `AntigravitySessionSource`. Its own
-            // liveness check is a separate, cheap subprocess call rather than this shared table:
-            // Claude/Codex CLI processes never identify an Antigravity workspace either way.
-            AntigravitySessionSource(antigravityHome: antigravityHome, fileManager: fileManager)
+            // Antigravity IDE workspaces, not agent turns — see `AntigravitySessionSource`. Gated
+            // behind `showAntigravityWorkspaces` (#27) and capped at `.idle` (#29); its own
+            // liveness check needs no process table at all any more.
+            AntigravitySessionSource(antigravityHome: antigravityHome, fileManager: fileManager),
+            // Real `agy` terminal sessions (#29) — unlike the IDE-workspace source above, always
+            // on, and shares this same process listing for the same reason Codex's does.
+            AntigravityCLISessionSource(
+                antigravityCLIHome: antigravityCLIHome,
+                fileManager: fileManager,
+                processProvider: processProvider
+            )
         ]
         self.processProvider = processProvider
         self.terminalResolver = terminalResolver
@@ -73,8 +83,26 @@ final class SessionStore: ObservableObject {
                 discovered[session.sessionId] = session
             }
         }
-        discoveredSessions = discovered
+        discoveredSessions = Self.suppressingWorkspacesShadowedByCLISessions(discovered)
         reconcile(now: now)
+    }
+
+    /// A CLI session and an IDE-workspace row for the very SAME folder is a duplicate a real user
+    /// hit turning on `showAntigravityWorkspaces` for the first time (#29): the CLI row is a real
+    /// session, so it wins outright and the workspace row for that path is dropped rather than
+    /// shown beside it.
+    private static func suppressingWorkspacesShadowedByCLISessions(
+        _ discovered: [String: DiscoveredSession]
+    ) -> [String: DiscoveredSession] {
+        let cliCwds = Set(discovered.values
+            .filter { $0.agentName == "Antigravity" && $0.sessionId.hasPrefix(AntigravityCLISessionSource.sessionIdPrefix) }
+            .map { CanonicalPath.canonical($0.cwd) })
+        guard !cliCwds.isEmpty else { return discovered }
+        return discovered.filter { _, session in
+            guard session.agentName == "Antigravity",
+                  AntigravitySessionSource.isWorkspaceSessionId(session.sessionId) else { return true }
+            return !cliCwds.contains(CanonicalPath.canonical(session.cwd))
+        }
     }
 
     @discardableResult
@@ -312,11 +340,15 @@ final class SessionStore: ObservableObject {
             // terminal pill: the session's own tty first, then a process that names the session,
             // and only then anything that merely shares the cwd (#23).
             //
-            // Antigravity is a GUI workspace, never a terminal — resolving it against the
-            // process table risks matching an unrelated Claude/Codex CLI process that merely
-            // shares this workspace's cwd, which would wrongly imply a terminal pill and an
-            // exact-focus rung neither exists for it (#3).
-            let target = agentName == "Antigravity" ? JumpTarget.unresolved : JumpTarget.resolve(
+            // An Antigravity IDE-workspace row is a GUI folder, never a terminal — resolving it
+            // against the process table risks matching an unrelated Claude/Codex CLI process
+            // that merely shares this workspace's cwd, which would wrongly imply a terminal pill
+            // and an exact-focus rung neither exists for it (#3). A real `agy` CLI session
+            // (same `agentName`, different `sessionId` prefix) is NOT shortcut here — it behaves
+            // exactly like Claude/Codex (#29).
+            let isAntigravityWorkspace = agentName == "Antigravity"
+                && AntigravitySessionSource.isWorkspaceSessionId(sessionID)
+            let target = isAntigravityWorkspace ? JumpTarget.unresolved : JumpTarget.resolve(
                 agentName: agentName,
                 sessionId: sessionID,
                 tty: tty,
