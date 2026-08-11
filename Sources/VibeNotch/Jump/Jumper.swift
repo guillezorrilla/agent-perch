@@ -135,11 +135,11 @@ final class Jumper: @unchecked Sendable {
         // A GUI workspace, not a terminal — none of the tty/Warp/cmux machinery below applies,
         // and running it anyway risks matching an unrelated terminal process that merely shares
         // this workspace's cwd (#3). A real `agy` CLI session (same `agentName`, different
-        // `sessionId` prefix — see `AgentSession.isAntigravityWorkspace`) falls through to the
-        // normal ladder below exactly like Claude/Codex (#29).
-        if session.isAntigravityWorkspace {
+        // `sessionId` prefix — see `AgentSession.workspaceIDE`) falls through to the normal ladder
+        // below exactly like Claude/Codex (#29). Cursor rows are all workspaces (#11).
+        if let ide = session.workspaceIDE {
             return JumpPlan(
-                target: .openAntigravity(path: session.cwd, agyAvailable: session.resumeCommand != nil),
+                target: .openWorkspaceIDE(ide, path: session.cwd, cliAvailable: session.resumeCommand != nil),
                 cwd: session.cwd,
                 terminal: nil,
                 resumeCommand: session.resumeCommand
@@ -230,8 +230,10 @@ final class Jumper: @unchecked Sendable {
                 focus: { warpFocuser.focus(tabIndex: $0) },
                 fallback: { openNewTab(at: plan.cwd, preferring: plan.terminal, resumeCommand: plan.resumeCommand) }
             )
-        case let .openAntigravity(path, agyAvailable):
-            let (executable, arguments) = Self.antigravityLaunchCommand(path: path, agyAvailable: agyAvailable)
+        case let .openWorkspaceIDE(ide, path, cliAvailable):
+            let (executable, arguments) = Self.workspaceIDELaunchCommand(
+                ide, path: path, cliAvailable: cliAvailable
+            )
             return Self.runDetached(executable, arguments)
         case .alreadyFocused:
             return true
@@ -241,14 +243,19 @@ final class Jumper: @unchecked Sendable {
         return openNewTab(at: plan.cwd, preferring: plan.terminal, resumeCommand: plan.resumeCommand)
     }
 
-    /// `agy` (if on PATH) launches through the user's shell env exactly like a terminal command
-    /// would; otherwise `open -a` asks LaunchServices for "Antigravity IDE" directly. Either one
+    /// The IDE's own CLI (if on PATH) launches through the user's shell env exactly like a terminal
+    /// command would; otherwise `open -a` asks LaunchServices for the app directly. Either one
     /// re-focuses an already-open window on this folder rather than spawning a second one — the
-    /// same way opening a path macOS already has open in an app just brings it forward.
-    static func antigravityLaunchCommand(path: String, agyAvailable: Bool) -> (executable: String, arguments: [String]) {
-        agyAvailable
-            ? ("/usr/bin/env", ["agy", path])
-            : ("/usr/bin/open", ["-a", "Antigravity IDE", path])
+    /// same way opening a path macOS already has open in an app just brings it forward. One
+    /// launcher for both forks: `agy` and `cursor` take a path and behave identically here (#11).
+    static func workspaceIDELaunchCommand(
+        _ ide: JumpPlan.WorkspaceIDE,
+        path: String,
+        cliAvailable: Bool
+    ) -> (executable: String, arguments: [String]) {
+        cliAvailable
+            ? ("/usr/bin/env", [ide.cli, path])
+            : ("/usr/bin/open", ["-a", ide.applicationName, path])
     }
 
     /// Fire-and-forget: doesn't wait for the launched app to actually finish opening, matching

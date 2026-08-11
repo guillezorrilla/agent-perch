@@ -69,6 +69,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             applyDisplayMode(settings.displayMode, forceReposition: true)
         }
+        // Re-publish now so a row appears or disappears with the toggle, then refresh: a provider
+        // that was hidden never spent its throttle window, so it is due immediately (#39).
+        settings.onUsageVisibilityChange = { [weak self] in
+            self?.usageProvider.visibilityDidChange()
+            Task { @MainActor [weak self] in await self?.usageProvider.refresh() }
+        }
 
         notifier = SessionNotifier(
             jumper: jumper,
@@ -107,7 +113,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         spoolWatcher?.start()
 
-        let settingsWindow = SettingsWindowController(settings: settings)
+        let settingsWindow = SettingsWindowController(
+            settings: settings,
+            usageProviders: usageProvider.registeredProviders
+        )
         self.settingsWindow = settingsWindow
         statusItem = StatusItemController(settings: settings) { [weak settingsWindow] in
             settingsWindow?.show()

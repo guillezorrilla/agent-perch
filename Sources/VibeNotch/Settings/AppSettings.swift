@@ -77,12 +77,23 @@ final class AppSettings: ObservableObject {
     // workspace directory's mtime is not evidence of agent activity, so leaving this on surfaced
     // idle workspaces beside real agent sessions (#27).
     @AppStorage("showAntigravityWorkspaces") private var storedShowAntigravityWorkspaces = false
+    // Same trick, same store, same default, for `CursorSessionSource` — and off for the same
+    // reason: a Cursor workspace directory's mtime moves on window focus and settings sync, not
+    // only on agent activity, so it is a hint about a folder and not evidence of a session (#11).
+    @AppStorage("showCursorWorkspaces") private var storedShowCursorWorkspaces = false
+    // One key holding the whole hidden set, not a Bool per provider — see `UsageVisibility` for
+    // why it is stored hidden-rather-than-shown, and why the same key is read directly by
+    // `UsageProvider` (#39).
+    @AppStorage(UsageVisibility.hiddenKey) private var storedHiddenUsageProviders = ""
     @Published private var installedHooks = false
 
     let applicationSupportDirectory: URL
     let settingsURL: URL
     var onDisplayModeChange: ((DisplayMode) -> Void)?
     var onScreenChoiceChange: ((ScreenChoice) -> Void)?
+    /// The strip is already on screen while Settings is open, and it publishes on its own clock;
+    /// this is what makes a toggle land immediately rather than up to two minutes later (#39).
+    var onUsageVisibilityChange: (() -> Void)?
 
     var displayMode: DisplayMode {
         get { storedDisplayMode }
@@ -164,6 +175,41 @@ final class AppSettings: ObservableObject {
             objectWillChange.send()
             storedShowAntigravityWorkspaces = newValue
         }
+    }
+
+    var showCursorWorkspaces: Bool {
+        get { storedShowCursorWorkspaces }
+        set {
+            guard newValue != storedShowCursorWorkspaces else { return }
+            objectWillChange.send()
+            storedShowCursorWorkspaces = newValue
+        }
+    }
+
+    /// Providers whose usage row the user has switched off. Membership, not a per-provider flag,
+    /// so Settings can render a toggle per registered provider without knowing any of their names
+    /// at compile time (#39).
+    var hiddenUsageProviders: Set<String> {
+        get { UsageVisibility.decode(storedHiddenUsageProviders) }
+        set {
+            let encoded = UsageVisibility.encode(newValue)
+            guard encoded != storedHiddenUsageProviders else { return }
+            objectWillChange.send()
+            storedHiddenUsageProviders = encoded
+            onUsageVisibilityChange?()
+        }
+    }
+
+    /// Absence means shown: a provider nobody has ever toggled — including one added in a later
+    /// version — is visible.
+    func showsUsageProvider(_ provider: String) -> Bool {
+        !hiddenUsageProviders.contains(provider)
+    }
+
+    func setUsageProvider(_ provider: String, shown: Bool) {
+        var hidden = hiddenUsageProviders
+        if shown { hidden.remove(provider) } else { hidden.insert(provider) }
+        hiddenUsageProviders = hidden
     }
 
     var hooksInstalled: Bool { installedHooks }
