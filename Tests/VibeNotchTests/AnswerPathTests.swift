@@ -162,6 +162,9 @@ final class AnswerPathTests: XCTestCase {
             codexHome: temporaryDirectory(),
             antigravityHome: temporaryDirectory(),
             antigravityCLIHome: temporaryDirectory(),
+            geminiHome: temporaryDirectory(),
+            openCodeDatabaseURL: temporaryDirectory().appendingPathComponent("opencode.db"),
+            kiroHome: temporaryDirectory(),
             processProvider: { [] }
         )
     }

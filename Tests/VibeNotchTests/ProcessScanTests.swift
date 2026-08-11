@@ -507,6 +507,9 @@ final class SessionIdentityTests: XCTestCase {
             codexHome: temporaryDirectory(),
             antigravityHome: temporaryDirectory(),
             antigravityCLIHome: temporaryDirectory(),
+            geminiHome: temporaryDirectory(),
+            openCodeDatabaseURL: temporaryDirectory().appendingPathComponent("opencode.db"),
+            kiroHome: temporaryDirectory(),
             processProvider: { processes }
         )
     }
@@ -602,6 +605,9 @@ final class JumpingStateTests: XCTestCase {
             codexHome: temporaryDirectory(),
             antigravityHome: temporaryDirectory(),
             antigravityCLIHome: temporaryDirectory(),
+            geminiHome: temporaryDirectory(),
+            openCodeDatabaseURL: temporaryDirectory().appendingPathComponent("opencode.db"),
+            kiroHome: temporaryDirectory(),
             processProvider: { [] }
         )
     }
