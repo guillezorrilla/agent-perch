@@ -195,6 +195,64 @@ final class AntigravityLivenessTests: XCTestCase {
     }
 }
 
+/// `pgrep Antigravity` never matched the IDE's own main process — that process is
+/// `/Applications/Antigravity IDE.app/Contents/MacOS/Electron`, whose NAME is `Electron` — so
+/// detection now matches the executable path's bundle instead (#27).
+final class AntigravityProcessCheckTests: XCTestCase {
+    func testMatchesTheMainElectronProcessInsideTheAntigravityBundle() {
+        XCTAssertTrue(AntigravityProcessCheck.isAntigravityExecutable(
+            "/Applications/Antigravity IDE.app/Contents/MacOS/Electron"
+        ))
+    }
+
+    func testMatchesHelperProcessesAndTheOtherBundleName() {
+        XCTAssertTrue(AntigravityProcessCheck.isAntigravityExecutable(
+            "/Applications/Antigravity IDE.app/Contents/Frameworks/Antigravity IDE Helper.app/Contents/MacOS/Antigravity IDE Helper"
+        ))
+        XCTAssertTrue(AntigravityProcessCheck.isAntigravityExecutable(
+            "/Applications/Antigravity.app/Contents/MacOS/Electron"
+        ))
+    }
+
+    func testRejectsAnUnrelatedElectronProcess() {
+        XCTAssertFalse(AntigravityProcessCheck.isAntigravityExecutable(
+            "/Applications/Claude.app/Contents/MacOS/Electron"
+        ))
+        XCTAssertFalse(AntigravityProcessCheck.isAntigravityExecutable(
+            "/Applications/Docker.app/Contents/MacOS/Docker Desktop.app/Contents/MacOS/Electron"
+        ))
+        XCTAssertFalse(AntigravityProcessCheck.isAntigravityExecutable("Electron"))
+    }
+
+    /// A bundle whose name merely ENDS with the one we want is a different app.
+    func testRejectsABundleThatOnlySuffixMatches() {
+        XCTAssertFalse(AntigravityProcessCheck.isAntigravityExecutable(
+            "/Applications/Not Antigravity.app/Contents/MacOS/Electron"
+        ))
+    }
+
+    func testScansAWholeProcessListingForTheBundle() {
+        let listing = """
+        /usr/libexec/secinitd
+        /Applications/Claude.app/Contents/MacOS/Electron
+        /Applications/Antigravity IDE.app/Contents/MacOS/Electron
+        """
+        XCTAssertTrue(AntigravityProcessCheck.isRunningByExecutablePath { listing })
+    }
+
+    func testAListingWithoutTheBundleIsNotRunning() {
+        let listing = """
+        /usr/libexec/secinitd
+        /Applications/Claude.app/Contents/MacOS/Electron
+        """
+        XCTAssertFalse(AntigravityProcessCheck.isRunningByExecutablePath { listing })
+    }
+
+    func testAFailedProcessListingIsNotRunning() {
+        XCTAssertFalse(AntigravityProcessCheck.isRunningByExecutablePath { nil })
+    }
+}
+
 final class AntigravitySessionSourceTests: XCTestCase {
     private let fixedNow = Date(timeIntervalSince1970: 1_786_000_000)
 
@@ -205,7 +263,8 @@ final class AntigravitySessionSourceTests: XCTestCase {
         let discovered = AntigravitySessionSource(
             antigravityHome: home,
             isRunningProvider: { false },
-            agyAvailableProvider: { false }
+            agyAvailableProvider: { false },
+            showWorkspaces: { true }
         ).discover(now: fixedNow)
 
         let session = try XCTUnwrap(discovered.first)
@@ -233,7 +292,8 @@ final class AntigravitySessionSourceTests: XCTestCase {
         let discovered = AntigravitySessionSource(
             antigravityHome: home,
             isRunningProvider: { false },
-            agyAvailableProvider: { false }
+            agyAvailableProvider: { false },
+            showWorkspaces: { true }
         ).discover(now: fixedNow)
 
         XCTAssertEqual(discovered.map(\.cwd), ["/Users/me/kept"])
@@ -247,7 +307,8 @@ final class AntigravitySessionSourceTests: XCTestCase {
         let discovered = AntigravitySessionSource(
             antigravityHome: home,
             isRunningProvider: { false },
-            agyAvailableProvider: { false }
+            agyAvailableProvider: { false },
+            showWorkspaces: { true }
         ).discover(now: fixedNow)
 
         let title = try XCTUnwrap(discovered.first?.title)
@@ -262,14 +323,16 @@ final class AntigravitySessionSourceTests: XCTestCase {
         let withAgy = AntigravitySessionSource(
             antigravityHome: home,
             isRunningProvider: { false },
-            agyAvailableProvider: { true }
+            agyAvailableProvider: { true },
+            showWorkspaces: { true }
         ).discover(now: fixedNow)
         XCTAssertEqual(withAgy.first?.resumeCommand, "agy '/Users/me/project'")
 
         let withoutAgy = AntigravitySessionSource(
             antigravityHome: home,
             isRunningProvider: { false },
-            agyAvailableProvider: { false }
+            agyAvailableProvider: { false },
+            showWorkspaces: { true }
         ).discover(now: fixedNow)
         XCTAssertNil(withoutAgy.first?.resumeCommand)
     }
@@ -281,7 +344,8 @@ final class AntigravitySessionSourceTests: XCTestCase {
         let discovered = AntigravitySessionSource(
             antigravityHome: home,
             isRunningProvider: { false },
-            agyAvailableProvider: { false }
+            agyAvailableProvider: { false },
+            showWorkspaces: { true }
         ).discover(now: fixedNow)
 
         XCTAssertEqual(discovered.first?.status, .idle)
@@ -295,7 +359,8 @@ final class AntigravitySessionSourceTests: XCTestCase {
         let discovered = AntigravitySessionSource(
             antigravityHome: home,
             isRunningProvider: { true },
-            agyAvailableProvider: { false }
+            agyAvailableProvider: { false },
+            showWorkspaces: { true }
         ).discover(now: fixedNow)
 
         let statusByPath = Dictionary(uniqueKeysWithValues: discovered.map { ($0.cwd, $0.status) })
@@ -310,7 +375,8 @@ final class AntigravitySessionSourceTests: XCTestCase {
         let discovered = AntigravitySessionSource(
             antigravityHome: home,
             isRunningProvider: { false },
-            agyAvailableProvider: { false }
+            agyAvailableProvider: { false },
+            showWorkspaces: { true }
         ).discover(now: fixedNow)
 
         XCTAssertTrue(discovered.isEmpty)
@@ -335,7 +401,8 @@ final class AntigravitySessionSourceTests: XCTestCase {
         let discovered = AntigravitySessionSource(
             antigravityHome: home,
             isRunningProvider: { false },
-            agyAvailableProvider: { false }
+            agyAvailableProvider: { false },
+            showWorkspaces: { true }
         ).discover(now: fixedNow)
 
         XCTAssertEqual(discovered.map(\.cwd), ["/Users/me/b", "/Users/me/a"])
@@ -349,7 +416,8 @@ final class AntigravitySessionSourceTests: XCTestCase {
         let discovered = AntigravitySessionSource(
             antigravityHome: home,
             isRunningProvider: { false },
-            agyAvailableProvider: { false }
+            agyAvailableProvider: { false },
+            showWorkspaces: { true }
         ).discover(now: fixedNow)
 
         XCTAssertEqual(discovered.map(\.cwd), ["/Users/me/project"])
@@ -360,9 +428,94 @@ final class AntigravitySessionSourceTests: XCTestCase {
             AntigravitySessionSource(
                 antigravityHome: URL(fileURLWithPath: "/nonexistent/Antigravity IDE"),
                 isRunningProvider: { true },
-                agyAvailableProvider: { true }
+                agyAvailableProvider: { true },
+                showWorkspaces: { true }
             ).discover(now: fixedNow).isEmpty
         )
+    }
+
+    // MARK: - Opt-in gate (#27)
+
+    /// A workspace directory's mtime is not evidence of agent activity, so nothing at all is
+    /// contributed until the user opts in — not even an idle row.
+    func testContributesNothingWhenTheSettingIsOff() throws {
+        let home = try makeTemporaryDirectory()
+        try makeWorkspace(in: home, hash: "abc", folderPath: "/Users/me/project", ageSeconds: 30)
+
+        let discovered = AntigravitySessionSource(
+            antigravityHome: home,
+            isRunningProvider: { XCTFail("must not probe for a process when opted out"); return true },
+            agyAvailableProvider: { XCTFail("must not probe for agy when opted out"); return true },
+            showWorkspaces: { false }
+        ).discover(now: fixedNow)
+
+        XCTAssertTrue(discovered.isEmpty)
+    }
+
+    /// Opted out, the directory listing itself must not happen — the gate is ahead of all disk
+    /// work, not a filter after it.
+    func testOptedOutNeverEnumeratesTheWorkspaceStorageDirectory() throws {
+        let home = try makeTemporaryDirectory()
+        try makeWorkspace(in: home, hash: "abc", folderPath: "/Users/me/project", ageSeconds: 30)
+
+        final class CountingFileManager: FileManager, @unchecked Sendable {
+            var listings = 0
+            override func contentsOfDirectory(
+                at url: URL,
+                includingPropertiesForKeys keys: [URLResourceKey]?,
+                options mask: FileManager.DirectoryEnumerationOptions = []
+            ) throws -> [URL] {
+                listings += 1
+                return try super.contentsOfDirectory(
+                    at: url, includingPropertiesForKeys: keys, options: mask
+                )
+            }
+        }
+
+        let fileManager = CountingFileManager()
+        _ = AntigravitySessionSource(
+            antigravityHome: home,
+            fileManager: fileManager,
+            isRunningProvider: { false },
+            agyAvailableProvider: { false },
+            showWorkspaces: { false }
+        ).discover(now: fixedNow)
+
+        XCTAssertEqual(fileManager.listings, 0)
+    }
+
+    /// Opted IN but with nothing running: rows may show, but none of them may claim to be active.
+    func testOptedInWithNoProcessRunningMarksNothingActive() throws {
+        let home = try makeTemporaryDirectory()
+        try makeWorkspace(in: home, hash: "a", folderPath: "/Users/me/a", ageSeconds: 30)
+        try makeWorkspace(in: home, hash: "b", folderPath: "/Users/me/b", ageSeconds: 90)
+
+        let discovered = AntigravitySessionSource(
+            antigravityHome: home,
+            isRunningProvider: { false },
+            agyAvailableProvider: { false },
+            showWorkspaces: { true }
+        ).discover(now: fixedNow)
+
+        XCTAssertEqual(discovered.count, 2)
+        XCTAssertFalse(discovered.contains { $0.status == .active })
+    }
+
+    func testOptedInWithAProcessRunningMarksAtMostOneActive() throws {
+        let home = try makeTemporaryDirectory()
+        try makeWorkspace(in: home, hash: "a", folderPath: "/Users/me/a", ageSeconds: 30)
+        try makeWorkspace(in: home, hash: "b", folderPath: "/Users/me/b", ageSeconds: 90)
+        try makeWorkspace(in: home, hash: "c", folderPath: "/Users/me/c", ageSeconds: 120)
+
+        let discovered = AntigravitySessionSource(
+            antigravityHome: home,
+            isRunningProvider: { true },
+            agyAvailableProvider: { false },
+            showWorkspaces: { true }
+        ).discover(now: fixedNow)
+
+        XCTAssertEqual(discovered.count, 3)
+        XCTAssertEqual(discovered.filter { $0.status == .active }.count, 1)
     }
 
     // MARK: - Fixtures

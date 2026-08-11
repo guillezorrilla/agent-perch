@@ -82,6 +82,18 @@ struct SettingsView: View {
                 }
             }
 
+            Section("Antigravity") {
+                VStack(alignment: .leading, spacing: 4) {
+                    Toggle("Show Antigravity workspaces", isOn: Binding(
+                        get: { settings.showAntigravityWorkspaces },
+                        set: { settings.showAntigravityWorkspaces = $0 }
+                    ))
+                    Text("Antigravity keeps no per-agent state on disk, so these are folders the IDE has open — not agent turns. Off by default.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             Section("Claude hooks") {
                 HStack {
                     Circle()
@@ -97,7 +109,7 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .padding(12)
-        .frame(width: 500, height: 490)
+        .frame(width: 500, height: 570)
     }
 }
 
@@ -114,7 +126,7 @@ final class SettingsWindowController {
         settings.refreshHooksInstalled()
         if window == nil {
             let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 500, height: 490),
+                contentRect: NSRect(x: 0, y: 0, width: 500, height: 570),
                 styleMask: [.titled, .closable],
                 backing: .buffered,
                 defer: false

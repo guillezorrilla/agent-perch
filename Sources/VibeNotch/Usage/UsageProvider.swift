@@ -1,5 +1,7 @@
 import Combine
 import Foundation
+import Security
+import os
 
 struct UsageWindow: Equatable, Sendable {
     let label: String
@@ -39,14 +41,77 @@ enum UsageSourceError: Error {
     case httpStatus(Int)
 }
 
+/// The three things a provider can be, replacing a binary available/absent that could not tell
+/// "your credentials could not be read" apart from "you don't use this provider" — both rendered
+/// as nothing at all, so the Claude row simply vanished with no explanation and no way to retry
+/// (#28).
+enum UsageAvailability: Equatable, Sendable {
+    /// Credentials in hand; fetch away.
+    case ready
+    /// Credentials exist but could not be read right now. The row stays on screen saying so, and
+    /// the strip's refresh button is its retry.
+    case unavailable(String)
+    /// Nothing configured for this provider on this machine — omit it entirely.
+    case notConfigured
+}
+
+/// One line of the usage strip: either real numbers or a visible admission that they could not be
+/// had. A provider is only ever *dropped* from this list when it is genuinely not configured.
+enum UsageRow: Equatable, Identifiable, Sendable {
+    case usage(ProviderUsage)
+    case unavailable(provider: String, detail: String)
+
+    var id: String { provider }
+
+    var provider: String {
+        switch self {
+        case .usage(let usage): return usage.provider
+        case .unavailable(let provider, _): return provider
+        }
+    }
+}
+
 protocol UsageSource {
     var name: String { get }
+    /// Cheap, synchronous, side-effect-free: "do I already hold what I need?". Called on every
+    /// refresh, so it must never spawn work — see `ClaudeUsageSource.isAvailable()`.
     func isAvailable() -> Bool
+    /// The real answer, allowed to do work (and, for the keychain, to block on a system prompt).
+    func availability() async -> UsageAvailability
+    /// The user asked again — forget any memoized refusal so the next read can genuinely re-try.
+    func prepareForRetry()
     func fetch() async throws -> ProviderUsage
 }
 
+extension UsageSource {
+    func availability() async -> UsageAvailability {
+        isAvailable() ? .ready : .notConfigured
+    }
+
+    func prepareForRetry() {}
+}
+
+enum UsageTokenReadResult: Equatable, Sendable {
+    case token(String)
+    /// Credentials exist, but this read could not produce a usable token.
+    case unreadable(String)
+    case notConfigured
+}
+
 protocol UsageTokenSource {
+    /// Cache-only. Never spawns a read, never raises a keychain prompt.
     func accessToken() -> String?
+    func read() async -> UsageTokenReadResult
+    func retryAfterFailure()
+}
+
+extension UsageTokenSource {
+    func read() async -> UsageTokenReadResult {
+        guard let token = accessToken() else { return .notConfigured }
+        return .token(token)
+    }
+
+    func retryAfterFailure() {}
 }
 
 protocol UsageLoading {
@@ -75,33 +140,188 @@ enum CredentialParser {
     }
 }
 
-struct RuntimeUsageTokenSource: UsageTokenSource {
-    let credentialsURL: URL
+/// What an `OSStatus` from `SecItemCopyMatching` means for us. Split out as a pure function so the
+/// branch mapping is testable without ever touching a real keychain.
+enum KeychainReadOutcome: Equatable, Sendable {
+    /// The item came back.
+    case success
+    /// The user said no, or there was no way to ask. A visible error row with a working retry —
+    /// never a silent disappearance, and never an immediate re-prompt.
+    case declined
+    /// No such item. Fall through to the `security` CLI, then the credentials file.
+    case notFound
+    /// Something else went wrong; worth exactly one more try.
+    case failed
 
-    init(credentialsURL: URL = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(".claude/.credentials.json")) {
-        self.credentialsURL = credentialsURL
-    }
-
-    func accessToken() -> String? {
-        if let data = securityOutput(), let token = try? CredentialParser.accessToken(from: data) {
-            return token
+    static func of(_ status: OSStatus) -> KeychainReadOutcome {
+        switch status {
+        case errSecSuccess: return .success
+        case errSecUserCanceled, errSecAuthFailed, errSecInteractionNotAllowed: return .declined
+        case errSecItemNotFound: return .notFound
+        default: return .failed
         }
-        guard let data = try? Data(contentsOf: credentialsURL) else { return nil }
-        return try? CredentialParser.accessToken(from: data)
+    }
+}
+
+/// The native, in-process keychain read.
+///
+/// This used to shell out to `/usr/bin/security`, which makes the *security binary* the process
+/// asking for the item rather than VibeNotch. Spawned from a GUI app with no TTY that read can be
+/// refused outright instead of prompting, and its failure was indistinguishable from "no
+/// credentials" — which is how the Claude row came to vanish silently (#28). Asking in-process
+/// means macOS shows the ordinary "VibeNotch wants to access key … in your keychain" dialog with
+/// Allow / Always Allow, and the grant sticks, because the app is signed with a stable identity.
+///
+/// `kSecUseAuthenticationUI` is deliberately NOT set: the prompt appearing is the point.
+enum ClaudeKeychain {
+    static let service = "Claude Code-credentials"
+
+    static func read() -> (status: OSStatus, data: Data?) {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        return (status, item as? Data)
     }
 
-    private func securityOutput() -> Data? {
+    /// Second chance, only ever reached on `errSecItemNotFound`: some installs keep the item under
+    /// attributes this query doesn't reproduce, and the CLI finds those.
+    static func securityCLI() -> Data? {
         let process = Process()
         let pipe = Pipe()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
-        process.arguments = ["find-generic-password", "-s", "Claude Code-credentials", "-w"]
+        process.arguments = ["find-generic-password", "-s", service, "-w"]
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
         guard (try? process.run()) != nil else { return nil }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
         return process.terminationStatus == 0 ? data : nil
+    }
+}
+
+/// Reads Claude Code's OAuth credentials, in this order: the native keychain API, then the
+/// `security` CLI, then `~/.claude/.credentials.json` — the last two only when the keychain says
+/// the item simply isn't there.
+///
+/// A class, not a struct, because it owns two pieces of process-lifetime state that exist purely
+/// so one bad read cannot cost the user their usage row:
+/// - `cachedToken`: once a token has been read, it is the answer for the rest of the process. No
+///   later failure can turn a working provider into an absent one, and `accessToken()` (called on
+///   every refresh) answers from it without work and without re-prompting.
+/// - `declined`: a refusal is remembered so a refresh loop cannot re-raise the system dialog over
+///   and over. The user's own retry — the strip's refresh button — clears it deliberately.
+///
+/// Reads run on a serial queue off the main thread: one may sit on a modal keychain dialog for as
+/// long as the user takes, and only ONE is ever in flight; a read that queued behind another finds
+/// the cache (or the refusal) already filled in and returns without asking a second time.
+final class RuntimeUsageTokenSource: UsageTokenSource, @unchecked Sendable {
+    let credentialsURL: URL
+    private let keychainRead: () -> (status: OSStatus, data: Data?)
+    private let securityCLIRead: () -> Data?
+    private let logger = Logger(subsystem: "com.vibenotch", category: "usage-credentials")
+    private let queue = DispatchQueue(label: "com.vibenotch.usage-credentials")
+    private let lock = NSLock()
+    private var cachedToken: String?
+    private var declined: String?
+
+    init(
+        credentialsURL: URL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude/.credentials.json"),
+        keychainRead: @escaping () -> (status: OSStatus, data: Data?) = ClaudeKeychain.read,
+        securityCLIRead: @escaping () -> Data? = ClaudeKeychain.securityCLI
+    ) {
+        self.credentialsURL = credentialsURL
+        self.keychainRead = keychainRead
+        self.securityCLIRead = securityCLIRead
+    }
+
+    func accessToken() -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return cachedToken
+    }
+
+    func read() async -> UsageTokenReadResult {
+        if let memoized = memoizedResult() { return memoized }
+        return await withCheckedContinuation { continuation in
+            queue.async { continuation.resume(returning: self.readNow()) }
+        }
+    }
+
+    func retryAfterFailure() {
+        lock.lock()
+        declined = nil
+        lock.unlock()
+    }
+
+    private func memoizedResult() -> UsageTokenReadResult? {
+        lock.lock()
+        defer { lock.unlock() }
+        if let cachedToken { return .token(cachedToken) }
+        if let declined { return .unreadable(declined) }
+        return nil
+    }
+
+    private func readNow() -> UsageTokenReadResult {
+        // A read that queued behind another already has its answer.
+        if let memoized = memoizedResult() { return memoized }
+
+        let result = resolve()
+        lock.lock()
+        switch result {
+        case .token(let token):
+            cachedToken = token
+            declined = nil
+        case .unreadable(let detail):
+            declined = detail
+        case .notConfigured:
+            // Cheap and non-interactive to re-check, so it is not memoized: signing into Claude
+            // Code later brings the row back on its own.
+            break
+        }
+        lock.unlock()
+        return result
+    }
+
+    private func resolve() -> UsageTokenReadResult {
+        // Retried once: a single transient failure must never be enough to drop the provider.
+        for attempt in 1...2 {
+            let (status, data) = keychainRead()
+            switch KeychainReadOutcome.of(status) {
+            case .success:
+                if let data, let token = try? CredentialParser.accessToken(from: data) {
+                    return .token(token)
+                }
+                logger.error("keychain item read but unusable (OSStatus \(status, privacy: .public))")
+                return .unreadable("credentials unreadable")
+            case .declined:
+                logger.error("keychain read declined (OSStatus \(status, privacy: .public))")
+                return .unreadable("keychain access denied")
+            case .notFound:
+                return fallback()
+            case .failed:
+                logger.error(
+                    "keychain read failed (OSStatus \(status, privacy: .public), attempt \(attempt, privacy: .public))"
+                )
+            }
+        }
+        return .unreadable("keychain unavailable")
+    }
+
+    private func fallback() -> UsageTokenReadResult {
+        if let data = securityCLIRead(), let token = try? CredentialParser.accessToken(from: data) {
+            return .token(token)
+        }
+        if let data = try? Data(contentsOf: credentialsURL),
+           let token = try? CredentialParser.accessToken(from: data) {
+            return .token(token)
+        }
+        return .notConfigured
     }
 }
 
@@ -134,12 +354,26 @@ struct ClaudeUsageSource: UsageSource {
         self.loader = loader
     }
 
+    /// Cache-only and instant. Every refresh calls this, so it must not spawn a keychain read or
+    /// re-raise the prompt; `availability()` is where the reading actually happens.
     func isAvailable() -> Bool {
         tokenSource.accessToken() != nil
     }
 
+    func availability() async -> UsageAvailability {
+        switch await tokenSource.read() {
+        case .token: return .ready
+        case .unreadable(let detail): return .unavailable(detail)
+        case .notConfigured: return .notConfigured
+        }
+    }
+
+    func prepareForRetry() {
+        tokenSource.retryAfterFailure()
+    }
+
     func fetch() async throws -> ProviderUsage {
-        guard let token = tokenSource.accessToken(),
+        guard case .token(let token) = await tokenSource.read(),
               let url = URL(string: "https://api.anthropic.com/api/oauth/usage") else {
             throw UsageSourceError.unavailable
         }
@@ -333,7 +567,19 @@ struct CodexUsageSource: UsageSource {
 
 @MainActor
 final class UsageProvider: ObservableObject {
-    @Published private(set) var providers: [ProviderUsage] = []
+    /// What the strip renders. A provider leaves this list only when it is genuinely not
+    /// configured; everything else — unreadable credentials, a 429, a dead network — becomes a
+    /// visible row rather than a silent absence (#28).
+    @Published private(set) var rows: [UsageRow] = []
+
+    /// Just the rows that carry real numbers.
+    var providers: [ProviderUsage] {
+        rows.compactMap { row -> ProviderUsage? in
+            guard case .usage(let usage) = row else { return nil }
+            return usage
+        }
+    }
+
     private var states: [SourceState]
     private let minFetchInterval: TimeInterval
 
@@ -341,6 +587,10 @@ final class UsageProvider: ObservableObject {
         let source: UsageSource
         var lastGood: ProviderUsage?
         var lastFetchAt: Date?
+        /// What to say when there are no numbers to show. Cleared by any successful fetch.
+        var problem: String?
+        /// False only when the provider is genuinely not set up on this machine.
+        var configured = true
     }
 
     init(
@@ -352,12 +602,17 @@ final class UsageProvider: ObservableObject {
     }
 
     func showCached() {
-        providers = states.compactMap(\.lastGood)
+        publish()
     }
 
-    // User tapped "refresh": bypass the throttle and hit the network now, for every provider.
+    // User tapped "refresh": bypass the throttle and hit the network now, for every provider —
+    // and let each source forget whatever made it give up, so a keychain prompt the user declined
+    // (or dismissed) can be raised again by this very button.
     func forceRefresh() async {
-        for index in states.indices { states[index].lastFetchAt = nil }
+        for index in states.indices {
+            states[index].lastFetchAt = nil
+            states[index].source.prepareForRetry()
+        }
         await refresh()
     }
 
@@ -365,7 +620,7 @@ final class UsageProvider: ObservableObject {
         for index in states.indices {
             await refreshSource(at: index)
         }
-        providers = states.compactMap(\.lastGood)
+        publish()
     }
 
     private func refreshSource(at index: Int) async {
@@ -376,17 +631,36 @@ final class UsageProvider: ObservableObject {
         }
         states[index].lastFetchAt = Date()
 
-        guard states[index].source.isAvailable() else {
+        switch await states[index].source.availability() {
+        case .notConfigured:
             // No credentials at all — this provider is simply absent, not an error.
+            states[index].configured = false
             states[index].lastGood = nil
-            return
+            states[index].problem = nil
+        case .unavailable(let detail):
+            // Credentials exist but could not be read. Handled exactly like the 429 path below:
+            // whatever numbers are already on screen stay there, and only with nothing at all to
+            // show does the row admit the problem.
+            states[index].configured = true
+            states[index].problem = detail
+        case .ready:
+            states[index].configured = true
+            do {
+                states[index].lastGood = try await states[index].source.fetch()
+                states[index].problem = nil
+            } catch {
+                // Transient failure (429 rate-limit, 5xx, network error, etc.) — keep the
+                // last good numbers for this provider instead of dropping it from the strip.
+                states[index].problem = "usage unavailable"
+            }
         }
+    }
 
-        do {
-            states[index].lastGood = try await states[index].source.fetch()
-        } catch {
-            // Transient failure (429 rate-limit, 5xx, network error, etc.) — keep the
-            // last good numbers for this provider instead of dropping it from the strip.
+    private func publish() {
+        rows = states.compactMap { state -> UsageRow? in
+            if let lastGood = state.lastGood { return .usage(lastGood) }
+            guard state.configured, let problem = state.problem else { return nil }
+            return .unavailable(provider: state.source.name, detail: problem)
         }
     }
 }
