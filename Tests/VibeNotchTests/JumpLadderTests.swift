@@ -184,6 +184,24 @@ final class CodexJumpTests: XCTestCase {
         XCTAssertTrue(TTYResolver.isCodexCLI(command: "/opt/homebrew/bin/codex resume 019fe8a4-1234"))
     }
 
+    // The Computer Use helper ships in its own bundle under `~/.codex`, and its path contains a
+    // SPACE — whitespace-splitting hands the basename check the bare word `codex`, so it passed
+    // #24's rejection list (#26). `LiveAgentScan` already rejects it by path; this matcher must
+    // too, and must stay narrow enough that a real session naming a bundle path in its arguments
+    // is still a session.
+    func testIsCodexCLIRejectsTheCodexComputerUseHelper() {
+        XCTAssertFalse(TTYResolver.isCodexCLI(
+            command: "/Users/me/.codex/computer-use/Codex Computer Use.app/Contents/MacOS/SkyComputerUseService"
+        ))
+        // The marker in isolation, without the `~/.codex` prefix.
+        XCTAssertFalse(TTYResolver.isCodexCLI(command: "Codex Computer Use.app/Contents/MacOS/SkyComputerUseService"))
+        // True negatives: a real CLI invocation still matches, including one whose arguments
+        // mention some unrelated application bundle.
+        XCTAssertTrue(TTYResolver.isCodexCLI(command: "/opt/homebrew/bin/codex"))
+        XCTAssertTrue(TTYResolver.isCodexCLI(command: "/Users/me/.codex/bin/codex resume 019fe8a4-1234"))
+        XCTAssertTrue(TTYResolver.isCodexCLI(command: "codex exec 'open /Applications/Preview.app/Contents/MacOS/Preview'"))
+    }
+
     func testGeneralizedAgentCLICheckDispatchesByAgentName() {
         XCTAssertTrue(TTYResolver.isAgentCLI("Codex", command: "/usr/local/bin/codex"))
         XCTAssertFalse(TTYResolver.isAgentCLI("Codex", command: "/usr/local/bin/claude"))
