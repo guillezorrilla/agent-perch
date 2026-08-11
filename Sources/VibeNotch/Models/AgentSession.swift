@@ -40,6 +40,11 @@ struct AgentSession: Identifiable, Equatable, Sendable {
     /// `var` rather than `let` only so the synthesized memberwise init can give it that default
     /// while still letting callers override it — this struct is never mutated after init.
     var supportsLiveStatus: Bool = true
+    /// Elapsed turn, cumulative tokens, steps and checklist for the expanded card (#15).
+    /// Accumulated in `SessionStore` from the hook stream, never re-derived here. Defaults to an
+    /// empty `SessionProgress` — which renders nothing at all — for the same reason
+    /// `supportsLiveStatus` has a default: existing fixtures shouldn't have to know it exists.
+    var progress = SessionProgress()
 
     var id: String { sessionId }
 
