@@ -377,6 +377,7 @@ final class PendingActionStoreTests: XCTestCase {
             geminiHome: temporaryDirectory(),
             openCodeDatabaseURL: temporaryDirectory().appendingPathComponent("opencode.db"),
             kiroHome: temporaryDirectory(),
+            cursorHome: temporaryDirectory(),
             processProvider: { [] }
         )
     }

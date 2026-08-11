@@ -1,7 +1,11 @@
 import Foundation
 
 struct HookInstaller {
-    static let preToolUseMatcher = "Edit|MultiEdit|Write|Bash|NotebookEdit|ExitPlanMode|AskUserQuestion"
+    /// Claude Code matches this as a whole-name regex, not a substring one: `TaskCreate` fires only
+    /// because it is spelled out here, and `Write` alone would never have matched `TodoWrite`
+    /// (verified against a live hook, #41). The checklist tools earn their place because the card's
+    /// ✓/■/□ rows are fed from nothing else — without them the panel could never show a real goal.
+    static let preToolUseMatcher = "Edit|MultiEdit|Write|Bash|NotebookEdit|ExitPlanMode|AskUserQuestion|TodoWrite|TaskCreate|TaskUpdate"
     static let eventNames = [
         "SessionStart",
         "UserPromptSubmit",

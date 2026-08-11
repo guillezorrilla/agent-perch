@@ -40,7 +40,7 @@ struct AgentSession: Identifiable, Equatable, Sendable {
     /// `var` rather than `let` only so the synthesized memberwise init can give it that default
     /// while still letting callers override it — this struct is never mutated after init.
     var supportsLiveStatus: Bool = true
-    /// Elapsed turn, cumulative tokens, steps and checklist for the expanded card (#15).
+    /// Elapsed turn, cumulative tokens and published checklist for the expanded card (#15).
     /// Accumulated in `SessionStore` from the hook stream, never re-derived here. Defaults to an
     /// empty `SessionProgress` — which renders nothing at all — for the same reason
     /// `supportsLiveStatus` has a default: existing fixtures shouldn't have to know it exists.
@@ -62,4 +62,36 @@ struct AgentSession: Identifiable, Equatable, Sendable {
     var folderName: String {
         cwd.hasPrefix("/") ? URL(fileURLWithPath: cwd).lastPathComponent : cwd
     }
+}
+
+extension AgentSession {
+    /// Which GUI IDE this row's folder belongs to, or `nil` for a real tty-backed agent session.
+    ///
+    /// One question, three answers away from each other on purpose: the jump ladder must skip the
+    /// tty/Warp/cmux machinery for these (#3), `SessionStore.reconcile` must not resolve them
+    /// against the process table at all (an unrelated Claude/Codex process sharing the folder would
+    /// otherwise imply a terminal pill and an exact-focus rung neither exists for), and
+    /// `SessionLayout` must never promote one to a full card (#29). Static as well as instance,
+    /// because `reconcile` asks it while BUILDING an `AgentSession` and so has only the two fields.
+    static func workspaceIDE(agentName: String, sessionId: String) -> JumpPlan.WorkspaceIDE? {
+        switch agentName {
+        // Antigravity's real `agy` CLI sessions deliberately share `agentName` with its
+        // IDE-workspace rows (one Settings toggle, one pill) and are told apart by the session-id
+        // prefix — a CLI session is NOT a workspace and takes the normal ladder (#29).
+        case "Antigravity":
+            return AntigravitySessionSource.isWorkspaceSessionId(sessionId) ? .antigravity : nil
+        // Cursor has no CLI-session counterpart in this app, so every row from its source is a
+        // workspace; the prefix check is still the same shape so the two cannot drift (#11).
+        case "Cursor":
+            return CursorSessionSource.isWorkspaceSessionId(sessionId) ? .cursor : nil
+        default:
+            return nil
+        }
+    }
+
+    var workspaceIDE: JumpPlan.WorkspaceIDE? {
+        Self.workspaceIDE(agentName: agentName, sessionId: sessionId)
+    }
+
+    var isIDEWorkspace: Bool { workspaceIDE != nil }
 }

@@ -546,13 +546,13 @@ final class AntigravityJumpRoutingTests: XCTestCase {
 
 final class AntigravityLaunchCommandTests: XCTestCase {
     func testUsesAgyWhenAvailable() {
-        let plan = Jumper.antigravityLaunchCommand(path: "/repo", agyAvailable: true)
+        let plan = Jumper.workspaceIDELaunchCommand(.antigravity, path: "/repo", cliAvailable: true)
         XCTAssertEqual(plan.executable, "/usr/bin/env")
         XCTAssertEqual(plan.arguments, ["agy", "/repo"])
     }
 
     func testFallsBackToOpenWhenAgyIsUnavailable() {
-        let plan = Jumper.antigravityLaunchCommand(path: "/repo", agyAvailable: false)
+        let plan = Jumper.workspaceIDELaunchCommand(.antigravity, path: "/repo", cliAvailable: false)
         XCTAssertEqual(plan.executable, "/usr/bin/open")
         XCTAssertEqual(plan.arguments, ["-a", "Antigravity IDE", "/repo"])
     }

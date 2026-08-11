@@ -7,6 +7,9 @@ struct SettingsView: View {
     /// re-reading the statuses has to happen on every `show()` — a grant changed in System Settings
     /// while this was closed must not still read as missing (#42).
     @ObservedObject var permissions: AnswerPermissionsModel
+    /// Handed in from `UsageProvider.registeredProviders` rather than listed here, so a sixth
+    /// `UsageSource` gets its toggle without touching this file (#39).
+    var usageProviders: [String] = []
 
     var body: some View {
         Form {
@@ -63,6 +66,24 @@ struct SettingsView: View {
                 .pickerStyle(.segmented)
             }
 
+            // Empty only in a preview or a test rig; an empty `Section` would still draw its box.
+            if !usageProviders.isEmpty {
+                Section("Usage") {
+                    // One toggle per row rather than the VStack the single-toggle sections below
+                    // use: five of them in a stack would leave the switches ragged instead of
+                    // aligned down the Form's own right edge.
+                    ForEach(usageProviders, id: \.self) { provider in
+                        Toggle(provider, isOn: Binding(
+                            get: { settings.showsUsageProvider(provider) },
+                            set: { settings.setUsageProvider(provider, shown: $0) }
+                        ))
+                    }
+                    Text("Which providers get a row in the usage strip above the session list. Antigravity takes two lines on its own — switching rows off is how you get that panel height back. A provider you switch off is not polled at all.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             Section("General") {
                 Toggle("Launch at login", isOn: Binding(
                     get: { settings.launchAtLogin },
@@ -93,6 +114,18 @@ struct SettingsView: View {
                         set: { settings.showAntigravityWorkspaces = $0 }
                     ))
                     Text("Shows recently-opened Antigravity IDE workspaces — not agent sessions, since Antigravity keeps no per-agent state on disk. Off by default. Antigravity CLI (agy) sessions are always shown, regardless of this setting.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Section("Cursor") {
+                VStack(alignment: .leading, spacing: 4) {
+                    Toggle("Show Cursor workspaces", isOn: Binding(
+                        get: { settings.showCursorWorkspaces },
+                        set: { settings.showCursorWorkspaces = $0 }
+                    ))
+                    Text("Shows recently-opened Cursor workspaces — not agent sessions, since Cursor keeps its chat state in a format this app doesn't read. Off by default.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -142,7 +175,10 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .padding(12)
-        .frame(width: 500, height: 620)
+        // Taller than it was: the Usage section adds a row per provider (#39) and Answering adds
+        // one per permission target (#42). The grouped Form still scrolls, so this only decides
+        // how much is visible without scrolling.
+        .frame(width: 500, height: 720)
     }
 
     /// The same circle/label/button shape as the "Claude hooks" row above, with the status text
@@ -185,10 +221,12 @@ struct SettingsView: View {
 final class SettingsWindowController {
     private let settings: AppSettings
     private let permissions = AnswerPermissionsModel()
+    private let usageProviders: [String]
     private var window: NSWindow?
 
-    init(settings: AppSettings) {
+    init(settings: AppSettings, usageProviders: [String] = []) {
         self.settings = settings
+        self.usageProviders = usageProviders
     }
 
     func show() {
@@ -198,7 +236,7 @@ final class SettingsWindowController {
         permissions.refresh()
         if window == nil {
             let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 500, height: 620),
+                contentRect: NSRect(x: 0, y: 0, width: 500, height: 720),
                 styleMask: [.titled, .closable],
                 backing: .buffered,
                 defer: false
@@ -206,7 +244,11 @@ final class SettingsWindowController {
             window.title = "VibeNotch Settings"
             window.isReleasedWhenClosed = false
             window.contentViewController = NSHostingController(
-                rootView: SettingsView(settings: settings, permissions: permissions)
+                rootView: SettingsView(
+                    settings: settings,
+                    permissions: permissions,
+                    usageProviders: usageProviders
+                )
             )
             window.center()
             self.window = window

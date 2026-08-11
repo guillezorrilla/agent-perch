@@ -605,6 +605,47 @@ struct CodexUsageSource: UsageSource {
     }
 }
 
+// MARK: - Row visibility (#39)
+
+/// Which usage rows the user has switched off, kept as ONE defaults key holding the whole set
+/// rather than a `Bool` per provider. The settings layer then hard-codes no provider list at all:
+/// it renders a toggle per *registered* `UsageSource`, so a sixth provider gets its toggle for
+/// free instead of needing a code change in three places.
+///
+/// The set stored is the HIDDEN one, never the shown one, for two reasons: the default — an empty
+/// string — means "show everything", so existing installs see exactly what they saw before; and a
+/// provider added later appears on its own rather than being born invisible because nobody had
+/// ticked a box that did not exist yet.
+enum UsageVisibility {
+    /// `UsageProvider` reads this straight from `UserDefaults.standard` and `AppSettings` writes
+    /// it through `@AppStorage`, which is backed by that same store — the same trick
+    /// `showSubAgentSessions` uses, and the reason nothing has to be plumbed from Settings down
+    /// to the fetch.
+    static let hiddenKey = "hiddenUsageProviders"
+
+    /// Commas separate, which keeps the value legible in `defaults read`; the one character a
+    /// `UsageSource.name` may therefore not contain is a comma, and none does. Empty and
+    /// whitespace-only fragments are dropped so a hand-edited "" or ",," reads as "nothing
+    /// hidden" instead of hiding a nameless row.
+    static func decode(_ raw: String) -> Set<String> {
+        Set(
+            raw.split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+        )
+    }
+
+    /// Sorted, so hiding A then B stores the same string as hiding B then A — which is what lets
+    /// the setter recognize a no-op write and skip the change notification.
+    static func encode(_ hidden: Set<String>) -> String {
+        hidden.sorted().joined(separator: ",")
+    }
+
+    static func hidden(in defaults: UserDefaults = .standard) -> Set<String> {
+        decode(defaults.string(forKey: hiddenKey) ?? "")
+    }
+}
+
 // MARK: - Aggregator
 
 @MainActor
@@ -624,6 +665,21 @@ final class UsageProvider: ObservableObject {
 
     private var states: [SourceState]
     private let minFetchInterval: TimeInterval
+    /// Read on every refresh and every publish rather than captured once, so a toggle flipped in
+    /// Settings is honoured by the very next pass (#39).
+    private let hiddenProviders: () -> Set<String>
+
+    /// Every source wired in, in strip order. Settings renders one toggle per entry — this is the
+    /// whole reason the provider list stays here and not in the settings layer (#39).
+    var registeredProviders: [String] { states.map(\.source.name) }
+
+    /// Nothing to show and nothing to say: every registered provider switched off. The strip then
+    /// renders nothing at all, rather than its "usage unavailable" box — that box is an admission
+    /// of failure, and a deliberate choice is not one (#39).
+    var allProvidersHidden: Bool {
+        let hidden = hiddenProviders()
+        return !states.isEmpty && states.allSatisfy { hidden.contains($0.source.name) }
+    }
 
     private struct SourceState {
         let source: UsageSource
@@ -643,13 +699,24 @@ final class UsageProvider: ObservableObject {
             KiroUsageSource(),
             GeminiUsageSource()
         ],
-        minFetchInterval: TimeInterval = 90
+        minFetchInterval: TimeInterval = 90,
+        hiddenProviders: @escaping () -> Set<String> = { UsageVisibility.hidden() }
     ) {
         self.states = sources.map { SourceState(source: $0, lastGood: nil, lastFetchAt: nil) }
         self.minFetchInterval = minFetchInterval
+        self.hiddenProviders = hiddenProviders
     }
 
     func showCached() {
+        publish()
+    }
+
+    /// Settings changed which rows the user wants. Re-publish at once so the strip follows the
+    /// toggle instead of waiting out the panel's two-minute loop; `objectWillChange` is sent by
+    /// hand because hiding the last row of an already-empty strip changes no published value and
+    /// would otherwise leave the old view on screen (#39).
+    func visibilityDidChange() {
+        objectWillChange.send()
         publish()
     }
 
@@ -671,8 +738,15 @@ final class UsageProvider: ObservableObject {
     /// read by spawning `kiro-cli chat`, which takes seconds and is allowed up to twenty — so
     /// Claude's and Codex's numbers, already in hand, would have sat unrendered behind it (#18).
     func refresh() async {
+        let hidden = hiddenProviders()
         var due: [(index: Int, source: UsageSource)] = []
-        for index in states.indices where isDue(at: index) {
+        for index in states.indices {
+            // A hidden provider is not fetched at all — Kiro's read spawns a subprocess, and
+            // nobody should pay for a row they switched off. Deliberately WITHOUT stamping
+            // `lastFetchAt`: skipping leaves the throttle untouched, which is what makes
+            // un-hiding fetch on the very next refresh instead of waiting out a window the
+            // provider never spent (#39).
+            guard !hidden.contains(states[index].source.name), isDue(at: index) else { continue }
             states[index].lastFetchAt = Date()
             due.append((index, states[index].source))
         }
@@ -743,7 +817,14 @@ final class UsageProvider: ObservableObject {
     }
 
     private func publish() {
+        let hidden = hiddenProviders()
         rows = states.compactMap { state -> UsageRow? in
+            // "Hidden by the user" is a fourth concept sitting ON TOP of the three-state model,
+            // never folded into it: the state itself is left exactly as it was, so unhiding
+            // brings back the numbers (or the error) unchanged, and `.unavailable` never comes
+            // to mean "switched off". The #28 invariant is about silent vanishing; this one the
+            // user asked for (#39).
+            guard !hidden.contains(state.source.name) else { return nil }
             if let lastGood = state.lastGood { return .usage(lastGood) }
             guard state.configured, let problem = state.problem else { return nil }
             return .unavailable(provider: state.source.name, detail: problem)
