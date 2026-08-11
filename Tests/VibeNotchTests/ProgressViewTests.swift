@@ -227,125 +227,140 @@ final class ProgressViewTests: XCTestCase {
         XCTAssertNil(SessionProgress.headerText(progress, now: now))
     }
 
-    // MARK: - Step derivation
+    // MARK: - The turn clock
 
-    func testFirstToolCallIsInFlightAndTheNextOneFinishesIt() {
+    func testStopStopsTheClock() {
         var progress = SessionProgress()
         progress.apply(event("UserPromptSubmit", at: 100))
-        progress.apply(read("/repo/Alpha.swift", at: 110))
-
-        XCTAssertEqual(progress.steps, [ProgressStep(label: "Reading Alpha.swift", isComplete: false)])
-
-        progress.apply(read("/repo/Beta.swift", at: 120))
-
-        XCTAssertEqual(progress.steps, [
-            ProgressStep(label: "Reading Alpha.swift", isComplete: true),
-            ProgressStep(label: "Reading Beta.swift", isComplete: false)
-        ])
-    }
-
-    func testStopFinishesTheInFlightStepAndStopsTheClock() {
-        var progress = SessionProgress()
-        progress.apply(event("UserPromptSubmit", at: 100))
-        progress.apply(read("/repo/Alpha.swift", at: 110))
+        progress.apply(bash("swift test", at: 110))
         progress.apply(event("Stop", at: 130))
 
-        XCTAssertEqual(progress.steps, [ProgressStep(label: "Reading Alpha.swift", isComplete: true)])
         XCTAssertNil(progress.turnStartedAt)
     }
 
-    func testAPermissionNotificationLeavesTheInFlightStepInFlight() {
-        // The tool call hasn't run — it is waiting on the user. Ticking it ✓ would claim it had.
+    func testAPermissionNotificationDoesNotEndTheTurn() {
+        // The tool call hasn't run — it is waiting on the user, and the clock is still that turn's.
         var progress = SessionProgress()
         progress.apply(event("UserPromptSubmit", at: 100))
-        progress.apply(read("/repo/Alpha.swift", at: 110))
+        progress.apply(bash("swift test", at: 110))
         progress.apply(event("Notification", at: 115))
 
-        XCTAssertEqual(progress.steps, [ProgressStep(label: "Reading Alpha.swift", isComplete: false)])
         XCTAssertEqual(progress.turnStartedAt, Date(timeIntervalSince1970: 100))
     }
 
     func testTheTurnClockStartsAtThePromptAndRestartsOnTheNextOne() {
         var progress = SessionProgress()
         progress.apply(event("UserPromptSubmit", at: 100))
-        progress.apply(read("/repo/Alpha.swift", at: 110))
+        progress.apply(bash("swift test", at: 110))
         XCTAssertEqual(progress.turnStartedAt, Date(timeIntervalSince1970: 100))
 
         progress.apply(event("UserPromptSubmit", at: 500))
         XCTAssertEqual(progress.turnStartedAt, Date(timeIntervalSince1970: 500))
-        XCTAssertEqual(progress.steps, [])
-        XCTAssertEqual(progress.droppedSteps, 0)
     }
 
     func testStartingMidTurnDatesTheTurnFromTheFirstToolCallSeen() {
         // VibeNotch launched after the prompt went in — "at least this old" beats no clock at all.
         var progress = SessionProgress()
-        progress.apply(read("/repo/Alpha.swift", at: 400))
+        progress.apply(bash("swift test", at: 400))
 
         XCTAssertEqual(progress.turnStartedAt, Date(timeIntervalSince1970: 400))
     }
 
-    func testAToolWithNoActivityPhrasingStillGetsAStepNamedAfterTheTool() {
-        var progress = SessionProgress()
-        progress.apply(event("PreToolUse", at: 110, tool: "SomeUnknownTool"))
+    // MARK: - The current action
 
-        XCTAssertEqual(progress.steps, [ProgressStep(label: "SomeUnknownTool", isComplete: false)])
-    }
-
-    // MARK: - Bounding
-
-    func testOnlyTheLastFewStepsAreKeptAndTheRestAreCounted() {
+    func testNoToolCallEverBecomesAChecklistRow() {
+        // The whole of #41: a finished `ls` is not an accomplishment, so the panel has no row for
+        // it — not a ✓, not a ■, not a `+N more`.
         var progress = SessionProgress()
         progress.apply(event("UserPromptSubmit", at: 100))
         for index in 1...9 {
-            progress.apply(read("/repo/File\(index).swift", at: 100 + Double(index)))
+            progress.apply(bash("ls dir\(index)", at: 100 + Double(index)))
         }
+        progress.apply(event("PreToolUse", at: 200, tool: "SomeUnknownTool"))
 
-        XCTAssertEqual(progress.steps.count, SessionProgress.retainedSteps)
-        XCTAssertEqual(progress.steps.last?.label, "Reading File9.swift")
-        XCTAssertEqual(progress.droppedSteps, 9 - SessionProgress.retainedSteps)
+        XCTAssertEqual(progress.todos, [])
+        XCTAssertEqual(SessionProgress.checklist(progress), [])
     }
 
-    func testRowsAreBoundedAndTheOverflowIsCounted() {
-        var progress = SessionProgress()
-        progress.apply(event("UserPromptSubmit", at: 100))
-        for index in 1...9 {
-            progress.apply(read("/repo/File\(index).swift", at: 100 + Double(index)))
-        }
+    @MainActor
+    func testTheCardShowsTheCurrentActionOnceAndThePanelNeverRepeatsIt() throws {
+        // #15 put the in-flight step in the panel as continuity under the status line. With the
+        // trail gone the two said the same words twice, so the panel gave the line up (#41).
+        let store = makeStore()
+        try send(to: store, "UserPromptSubmit", timestamp: 100)
+        try send(to: store, "PreToolUse", timestamp: 110, fields: bashFields)
 
-        let rows = SessionProgress.rows(progress, limit: 3)
-
-        XCTAssertEqual(rows, [
-            .step(ProgressStep(label: "Reading File7.swift", isComplete: true)),
-            .step(ProgressStep(label: "Reading File8.swift", isComplete: true)),
-            .step(ProgressStep(label: "Reading File9.swift", isComplete: false)),
-            .more(6)
-        ])
+        let session = try XCTUnwrap(store.sessions.first)
+        XCTAssertEqual(
+            SessionStatusPresentation.of(session),
+            .activity("Running grep -n needle Sources")
+        )
+        XCTAssertEqual(SessionProgress.checklist(session.progress), [])
+        // The panel is still there — it is showing the turn's cost, not its tool calls.
+        XCTAssertTrue(session.progress.hasAnythingToShow)
     }
 
-    func testRowBudgetIsFour() {
-        XCTAssertEqual(SessionProgress.maxRows, 4)
+    @MainActor
+    func testNoActionInFlightLeavesTheCardWithNoActionLineAnywhere() throws {
+        let store = makeStore()
+        try send(to: store, "UserPromptSubmit", timestamp: 100)
+        try send(to: store, "Stop", timestamp: 110)
+
+        let session = try XCTUnwrap(store.sessions.first)
+        XCTAssertEqual(SessionStatusPresentation.of(session), .done)
+        XCTAssertEqual(SessionProgress.checklist(session.progress), [])
     }
 
     // MARK: - Checklist
 
-    /// Claude Code's documented `TodoWrite` shape. Nothing on this machine has ever written one
-    /// to a transcript (probed: zero `"name":"TodoWrite"` and zero `"todos":` across all 284
-    /// transcripts), so this is the hand-written fixture the checklist path is built against —
-    /// it arrives through the hook payload, which carries the full `tool_input`.
-    private func todoWrite(at ts: TimeInterval, _ entries: [(String, String, String)]) -> HookEvent {
-        event("PreToolUse", at: ts, tool: "TodoWrite", input: .object([
-            "todos": .array(entries.map { content, activeForm, status in
-                .object([
-                    "content": .string(content),
-                    "activeForm": .string(activeForm),
-                    "status": .string(status)
-                ])
-            })
-        ]))
+    @MainActor
+    func testARealPublishedPlanReachesTheCardFromTheHookPayload() throws {
+        // End to end on the payloads Claude Code 2.1.227 actually delivers — captured by driving a
+        // real agent through a real `PreToolUse` hook (#41) — from raw hook JSON through
+        // `SessionStore` to the rows the panel draws.
+        let store = makeStore()
+        try send(to: store, "UserPromptSubmit", timestamp: 100)
+        try send(to: store, "PreToolUse", timestamp: 110, fields: taskCreateFields("Probe the data", "Probing the data"))
+        try send(to: store, "PreToolUse", timestamp: 111, fields: taskCreateFields("Write the model", "Writing the model"))
+        try send(to: store, "PreToolUse", timestamp: 112, fields: taskCreateFields("Wire the view", "Wiring the view"))
+        try send(to: store, "PreToolUse", timestamp: 113, fields: taskUpdateFields("1", "completed"))
+        try send(to: store, "PreToolUse", timestamp: 114, fields: taskUpdateFields("2", "in_progress"))
+
+        let rows = SessionProgress.checklist(try XCTUnwrap(store.sessions.first).progress)
+
+        // ✓ / ■ / □, and the in-flight row in its present tense.
+        XCTAssertEqual(rows.map(\.state), [.completed, .inProgress, .pending])
+        XCTAssertEqual(rows.map(\.text), ["Probe the data", "Writing the model", "Wire the view"])
     }
 
-    func testTodosRenderByStatusAboveTheStepList() {
+    func testAnUpdateForATaskWeNeverSawCreatedChangesNothing() {
+        // VibeNotch attached mid-session: the create was never seen, so the id addresses nothing
+        // and the panel would rather say less than tick the wrong row.
+        var progress = SessionProgress()
+        progress.apply(taskCreate("Probe the data", "Probing the data", at: 110))
+        progress.apply(taskUpdate("7", "completed", at: 120))
+
+        XCTAssertEqual(SessionProgress.checklist(progress).map(\.state), [.pending])
+    }
+
+    func testADeletedTaskLeavesTheChecklistWithoutShiftingTheOnesAfterIt() {
+        var progress = SessionProgress()
+        progress.apply(taskCreate("Probe the data", "Probing the data", at: 110))
+        progress.apply(taskCreate("Write the model", "Writing the model", at: 111))
+        progress.apply(taskCreate("Wire the view", "Wiring the view", at: 112))
+        progress.apply(taskUpdate("2", "deleted", at: 120))
+        // Still id 3 to Claude Code, so it must still be row 3 here.
+        progress.apply(taskUpdate("3", "in_progress", at: 121))
+
+        XCTAssertEqual(SessionProgress.checklist(progress).map(\.text), [
+            "Probe the data",
+            "Wiring the view"
+        ])
+        XCTAssertEqual(SessionProgress.checklist(progress).map(\.state), [.pending, .inProgress])
+    }
+
+    func testTodoWriteStillPublishesAWholeChecklistAtOnce() {
+        // Older Claude Code, and any agent that writes the whole array every call.
         var progress = SessionProgress()
         progress.apply(event("UserPromptSubmit", at: 100))
         progress.apply(todoWrite(at: 110, [
@@ -354,30 +369,12 @@ final class ProgressViewTests: XCTestCase {
             ("Wire the view", "Wiring the view", "pending")
         ]))
 
-        XCTAssertEqual(progress.todos, [
-            ProgressTodo(label: "Probe the data", state: .completed),
-            // in_progress shows `activeForm` — the present-tense phrasing exists for exactly this.
-            ProgressTodo(label: "Writing the model", state: .inProgress),
-            ProgressTodo(label: "Wire the view", state: .pending)
+        XCTAssertEqual(SessionProgress.checklist(progress).map(\.state), [
+            .completed, .inProgress, .pending
         ])
-
-        progress.apply(read("/repo/Alpha.swift", at: 120))
-
-        XCTAssertEqual(SessionProgress.rows(progress, limit: 4), [
-            .todo(ProgressTodo(label: "Probe the data", state: .completed)),
-            .todo(ProgressTodo(label: "Writing the model", state: .inProgress)),
-            .todo(ProgressTodo(label: "Wire the view", state: .pending)),
-            .step(ProgressStep(label: "Reading Alpha.swift", isComplete: false))
+        XCTAssertEqual(SessionProgress.checklist(progress).map(\.text), [
+            "Probe the data", "Writing the model", "Wire the view"
         ])
-    }
-
-    func testTodoWriteItselfIsNotAlsoAStep() {
-        // The checklist rendered above it IS that call's output.
-        var progress = SessionProgress()
-        progress.apply(event("UserPromptSubmit", at: 100))
-        progress.apply(todoWrite(at: 110, [("Probe the data", "Probing the data", "pending")]))
-
-        XCTAssertEqual(progress.steps, [])
     }
 
     func testALongChecklistIsWindowedOnTheItemInFlight() {
@@ -388,45 +385,43 @@ final class ProgressViewTests: XCTestCase {
         }))
 
         // Not "Task 1…Task 3", which would be three ✓ and no news.
-        XCTAssertEqual(SessionProgress.rows(progress, limit: 3), [
-            .todo(ProgressTodo(label: "Task 4", state: .completed)),
-            .todo(ProgressTodo(label: "Doing task 5", state: .inProgress)),
-            .todo(ProgressTodo(label: "Task 6", state: .pending)),
-            .more(5)
+        XCTAssertEqual(SessionProgress.checklist(progress, limit: 3).map(\.text), [
+            "Task 4",
+            "Doing task 5",
+            "Task 6"
         ])
     }
 
-    func testAChecklistThatFillsTheBudgetLeavesNoRoomForSteps() {
-        var progress = SessionProgress()
-        progress.apply(todoWrite(at: 110, (1...4).map { ("Task \($0)", "Doing task \($0)", "pending") }))
-        progress.apply(read("/repo/Alpha.swift", at: 120))
-
-        let rows = SessionProgress.rows(progress, limit: 4)
-
-        XCTAssertEqual(rows.filter { if case .step = $0 { return true } else { return false } }, [])
-        XCTAssertEqual(rows.last, .more(1))
+    func testRowBudgetIsFour() {
+        XCTAssertEqual(SessionProgress.maxRows, 4)
     }
 
     func testASessionWithNoTodosRendersNoChecklistSectionAtAll() {
         var progress = SessionProgress()
         progress.apply(event("UserPromptSubmit", at: 100))
-        progress.apply(read("/repo/Alpha.swift", at: 110))
+        progress.apply(bash("swift test", at: 110))
 
         XCTAssertEqual(progress.todos, [])
-        XCTAssertEqual(SessionProgress.rows(progress), [
-            .step(ProgressStep(label: "Reading Alpha.swift", isComplete: false))
-        ])
+        XCTAssertEqual(SessionProgress.checklist(progress), [])
     }
 
-    func testANewPromptDropsTheOldChecklistRatherThanLeavingItFullyTicked() {
+    func testANewPromptDropsAFinishedChecklistAndKeepsOneStillInFlight() {
         var progress = SessionProgress()
-        progress.apply(todoWrite(at: 110, [("Probe the data", "Probing the data", "completed")]))
+        progress.apply(taskCreate("Probe the data", "Probing the data", at: 110))
+        progress.apply(taskUpdate("1", "in_progress", at: 111))
         progress.apply(event("UserPromptSubmit", at: 500))
 
+        // `TaskCreate`/`TaskUpdate` never re-publish the list, so dropping this would lose it.
+        XCTAssertEqual(SessionProgress.checklist(progress).map(\.state), [.inProgress])
+
+        progress.apply(taskUpdate("1", "completed", at: 510))
+        progress.apply(event("UserPromptSubmit", at: 900))
+
+        // Fully ✓ and the user has moved on: it would sit there ticked forever.
         XCTAssertEqual(progress.todos, [])
     }
 
-    func testAMalformedTodoPayloadYieldsNoChecklistRatherThanPlaceholderRows() {
+    func testAMalformedChecklistPayloadYieldsNoRowsRatherThanPlaceholderOnes() {
         XCTAssertEqual(SessionProgress.todos(in: nil), [])
         XCTAssertEqual(SessionProgress.todos(in: .object(["todos": .string("nope")])), [])
         XCTAssertEqual(
@@ -440,6 +435,22 @@ final class ProgressViewTests: XCTestCase {
             ])])),
             [ProgressTodo(label: "Do it", state: .pending)]
         )
+
+        // A `TaskCreate` with no subject and a `TaskUpdate` with no id are both no-ops.
+        var progress = SessionProgress()
+        progress.apply(event("PreToolUse", at: 110, tool: "TaskCreate", input: .object([:])))
+        progress.apply(event("PreToolUse", at: 111, tool: "TaskUpdate", input: .object([:])))
+        XCTAssertEqual(progress.todos, [])
+    }
+
+    func testStoredChecklistItemsAreCappedSoASessionCannotAccumulateForever() {
+        var progress = SessionProgress()
+        for index in 1...(SessionProgress.retainedTodos + 10) {
+            progress.apply(taskCreate("Task \(index)", "Doing task \(index)", at: 100 + Double(index)))
+        }
+
+        XCTAssertEqual(progress.todos.count, SessionProgress.retainedTodos)
+        XCTAssertEqual(SessionProgress.checklist(progress).count, SessionProgress.maxRows)
     }
 
     // MARK: - Empty panel
@@ -448,7 +459,7 @@ final class ProgressViewTests: XCTestCase {
         let progress = SessionProgress()
 
         XCTAssertFalse(progress.hasAnythingToShow)
-        XCTAssertEqual(SessionProgress.rows(progress), [])
+        XCTAssertEqual(SessionProgress.checklist(progress), [])
         XCTAssertNil(SessionProgress.headerText(progress, now: Date()))
     }
 
@@ -475,6 +486,15 @@ final class ProgressViewTests: XCTestCase {
         XCTAssertFalse(session.progress.hasAnythingToShow)
     }
 
+    func testAChecklistOfNothingButDeletedItemsIsNoPanelAtAll() {
+        var progress = SessionProgress()
+        progress.apply(taskCreate("Probe the data", "Probing the data", at: 110))
+        progress.apply(taskUpdate("1", "deleted", at: 120))
+        progress.turnStartedAt = nil
+
+        XCTAssertFalse(progress.hasAnythingToShow)
+    }
+
     func testTokensAloneAreEnoughToShowThePanelAfterATurnEnds() {
         var progress = SessionProgress()
         progress.tokens = 12_140
@@ -484,6 +504,46 @@ final class ProgressViewTests: XCTestCase {
     }
 
     // MARK: - Fixtures
+
+    /// The exact `tool_input` Claude Code 2.1.227 sends for a published plan, captured off a live
+    /// `PreToolUse` hook (#41): `TaskCreate` carries `subject`/`description`/`activeForm` and no id
+    /// at all, and `TaskUpdate` addresses an item by the 1-based id assigned in creation order.
+    private func taskCreateFields(_ subject: String, _ activeForm: String) -> String {
+        #", "tool_name":"TaskCreate", "tool_input":{"subject":"\#(subject)", "description":"\#(subject)", "activeForm":"\#(activeForm)"}"#
+    }
+
+    private func taskUpdateFields(_ id: String, _ status: String) -> String {
+        #", "tool_name":"TaskUpdate", "tool_input":{"taskId":"\#(id)", "status":"\#(status)"}"#
+    }
+
+    private func taskCreate(_ subject: String, _ activeForm: String, at ts: TimeInterval) -> HookEvent {
+        event("PreToolUse", at: ts, tool: "TaskCreate", input: .object([
+            "subject": .string(subject),
+            "description": .string(subject),
+            "activeForm": .string(activeForm)
+        ]))
+    }
+
+    private func taskUpdate(_ id: String, _ status: String, at ts: TimeInterval) -> HookEvent {
+        event("PreToolUse", at: ts, tool: "TaskUpdate", input: .object([
+            "taskId": .string(id),
+            "status": .string(status)
+        ]))
+    }
+
+    /// Claude Code's older whole-list shape, kept working for agents and versions that still emit
+    /// it — it arrives through the same hook payload, which carries the full `tool_input`.
+    private func todoWrite(at ts: TimeInterval, _ entries: [(String, String, String)]) -> HookEvent {
+        event("PreToolUse", at: ts, tool: "TodoWrite", input: .object([
+            "todos": .array(entries.map { content, activeForm, status in
+                .object([
+                    "content": .string(content),
+                    "activeForm": .string(activeForm),
+                    "status": .string(status)
+                ])
+            })
+        ]))
+    }
 
     private func event(
         _ name: String,
@@ -497,7 +557,48 @@ final class ProgressViewTests: XCTestCase {
         return HookEvent(event: name, tty: "ttys001", ts: ts, payload: payload)
     }
 
-    private func read(_ path: String, at ts: TimeInterval) -> HookEvent {
-        event("PreToolUse", at: ts, tool: "Read", input: .object(["file_path": .string(path)]))
+    private func bash(_ command: String, at ts: TimeInterval) -> HookEvent {
+        event("PreToolUse", at: ts, tool: "Bash", input: .object(["command": .string(command)]))
+    }
+
+    private let bashFields = #", "tool_name":"Bash", "tool_input":{"command":"grep -n needle Sources"}"#
+
+    @MainActor
+    private func makeStore() -> SessionStore {
+        SessionStore(
+            projectsDirectory: temporaryDirectory(),
+            codexHome: temporaryDirectory(),
+            antigravityHome: temporaryDirectory(),
+            antigravityCLIHome: temporaryDirectory(),
+            geminiHome: temporaryDirectory(),
+            openCodeDatabaseURL: temporaryDirectory().appendingPathComponent("opencode.db"),
+            kiroHome: temporaryDirectory(),
+            processProvider: { [] }
+        )
+    }
+
+    /// The bytes the hook script writes, verbatim: its own envelope wrapped around whatever Claude
+    /// Code piped to its stdin.
+    @MainActor
+    private func send(
+        to store: SessionStore,
+        _ name: String,
+        timestamp: Int,
+        fields: String = ""
+    ) throws {
+        let event = try HookEvent.parse(Data("""
+        {"event":"\(name)","tty":"ttys001","ts":\(timestamp),"payload":{"session_id":"session-1","cwd":"/tmp/repo"\(fields)}}
+        """.utf8))
+        store.handle(event, now: event.timestamp)
+    }
+
+    private func temporaryDirectory() -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(
+            UUID().uuidString,
+            isDirectory: true
+        )
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        return url
     }
 }

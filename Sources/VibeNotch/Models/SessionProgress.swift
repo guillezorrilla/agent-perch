@@ -1,59 +1,49 @@
 import Foundation
 
-/// One tool call the agent made this turn, in the order it made it (#15). Derived from the same
-/// `PreToolUse` hook events that already feed the card's live-activity line — nothing new is
-/// parsed or watched for it.
-struct ProgressStep: Equatable, Sendable {
-    let label: String
-    var isComplete: Bool
-}
-
-/// A `TodoWrite` entry's three states, spelled the way Claude Code writes them so the raw value
-/// is the parse.
+/// A checklist entry's states, spelled the way Claude Code writes them so the raw value is the
+/// parse. `deleted` is a status the agent can genuinely set (`TaskUpdate`); the item keeps its slot
+/// so the ones after it still line up by position, and the panel simply never draws it (#41).
 enum TodoState: String, Equatable, Sendable {
     case pending
     case inProgress = "in_progress"
     case completed
+    case deleted
 }
 
 struct ProgressTodo: Equatable, Sendable {
+    /// The imperative phrasing the agent wrote: "Write the model".
     let label: String
-    let state: TodoState
-}
+    /// The present-tense phrasing it wrote alongside it ("Writing the model"), which exists for
+    /// exactly one moment: while this is the item in flight.
+    var activeLabel: String?
+    var state: TodoState
 
-/// One rendered line of the progress panel. Deriving these as values rather than inside the view
-/// is what makes the bounding rule testable without touching SwiftUI (#15).
-enum ProgressRow: Equatable, Sendable {
-    case todo(ProgressTodo)
-    case step(ProgressStep)
-    /// Everything the row budget could not fit, todos and steps together.
-    case more(Int)
+    var text: String { (state == .inProgress ? activeLabel : nil) ?? label }
 }
 
 /// What the expanded card knows about a session's turn in flight: how long it has been running,
-/// what it has cost, the trail of steps behind it, and the agent's own checklist when it
-/// publishes one (#15).
+/// what it has cost, and the agent's own checklist when it publishes one (#15).
+///
+/// The trail of finished tool calls #15 also drew here is gone (#41). A finished `ls` is not an
+/// accomplishment, and rendering it with a ✓ borrowed the visual language of a checklist for
+/// something that was not one; the one call actually in flight is already the card's status line,
+/// one row above this panel. What is left is the two things the card cannot say anywhere else.
 ///
 /// Accumulated incrementally in `SessionStore`'s per-session hook state — every field except
-/// `tokens` is folded from the hook event stream one event at a time, so a turn with a thousand
-/// tool calls costs the same as one with three. `tokens` is the one thing hooks cannot supply
-/// (no hook payload carries a token count) and comes from `TranscriptTokenTally`, which is
-/// incremental for the same reason.
+/// `tokens` is folded from the hook event stream one event at a time. `tokens` is the one thing
+/// hooks cannot supply (no hook payload carries a token count) and comes from
+/// `TranscriptTokenTally`, which is incremental for the same reason.
 struct SessionProgress: Equatable, Sendable {
-    /// Steps are kept only as deep as the panel can render them; older ones are counted, not
-    /// stored, so `+N more` stays truthful without holding a whole turn's history alive.
-    static let retainedSteps = 4
     /// The panel's row budget. A notch panel that grows with the turn eventually covers the
     /// screen — and every extra row here is multiplied by `SessionLayout.maxFullCards`.
     static let maxRows = 4
+    /// Stored items are capped well above the row budget: the panel windows onto the item in
+    /// flight, so a ten-item plan has to be kept whole, but a session must not accumulate forever.
+    static let retainedTodos = 32
 
     /// When the turn in flight started, or `nil` between turns. Drives the elapsed half of the
     /// header, so a finished turn stops counting instead of reporting time the agent isn't using.
     var turnStartedAt: Date?
-    /// Oldest to newest, at most `retainedSteps`.
-    var steps: [ProgressStep] = []
-    /// Steps that fell off the front of `steps`.
-    var droppedSteps: Int = 0
     /// Empty unless the agent actually published a checklist — see `hasAnythingToShow`.
     var todos: [ProgressTodo] = []
     /// Cumulative for the session, filled in by `SessionStore` from `TranscriptTokenTally`.
@@ -62,7 +52,7 @@ struct SessionProgress: Equatable, Sendable {
     /// Whether this session has anything at all worth a panel. An empty panel is worse than no
     /// panel — it costs the same vertical space in the notch and says nothing (#15).
     var hasAnythingToShow: Bool {
-        turnStartedAt != nil || tokens > 0 || !steps.isEmpty || !todos.isEmpty
+        turnStartedAt != nil || tokens > 0 || todos.contains { $0.state != .deleted }
     }
 
     /// Folds one hook event in. Mirrors `SessionStore.handle`'s own switch on `event.event` so
@@ -71,73 +61,70 @@ struct SessionProgress: Equatable, Sendable {
         switch event.event {
         case "SessionStart", "UserPromptSubmit":
             turnStartedAt = event.timestamp
-            steps = []
-            droppedSteps = 0
-            // The checklist is dropped with the steps rather than carried across the turn
-            // boundary: a plan belonging to a request the user has already moved past would sit
-            // there fully ✓ forever. Claude re-publishes the entire list on its next `TodoWrite`
-            // (it writes the whole array every time), so a plan that genuinely continues comes
-            // straight back on the first tool call of the new turn.
-            todos = []
+            // Only a finished checklist is dropped at the turn boundary: one left fully ✓ belongs
+            // to a request the user has already moved past. A plan with work still in it is
+            // carried across, because `TaskCreate`/`TaskUpdate` publish one item at a time and
+            // never re-send the list — clearing here would lose a multi-turn plan for good (#41).
+            if !todos.contains(where: { $0.state == .pending || $0.state == .inProgress }) {
+                todos = []
+            }
         case "PreToolUse":
             // A tool call with no prompt behind it means VibeNotch started mid-turn. The turn is
             // at least this old, which beats showing no elapsed time at all.
             turnStartedAt = turnStartedAt ?? event.timestamp
-            if event.toolName == "TodoWrite" {
-                todos = Self.todos(in: event.toolInput)
-                // No step row for it: the checklist rendered directly above IS this call's
-                // output, and "Updating the plan" would spend one of four rows saying so twice.
-                return
-            }
-            guard let label = ActivityLine.describe(
-                toolName: event.toolName,
-                toolInput: event.toolInput
-            ) ?? event.toolName, !label.isEmpty else { return }
-            // The previous step is finished the moment the next one starts — the hooks give us
-            // no PostToolUse, and in practice the agent never has two calls in flight at once.
-            completeAllSteps()
-            steps.append(ProgressStep(label: label, isComplete: false))
-            if steps.count > Self.retainedSteps {
-                let overflow = steps.count - Self.retainedSteps
-                steps.removeFirst(overflow)
-                droppedSteps += overflow
-            }
+            applyChecklist(event)
         case "Stop", "SessionEnd":
-            completeAllSteps()
             turnStartedAt = nil
         default:
-            // `Notification` included, deliberately: a permission prompt means the in-flight step
-            // is still in flight, waiting on the user. Marking it ✓ would claim it had run.
+            // `Notification` included: a permission prompt is the turn waiting on the user, not
+            // the turn ending.
             break
         }
     }
 
-    private mutating func completeAllSteps() {
-        for index in steps.indices where !steps[index].isComplete {
-            steps[index].isComplete = true
+    /// Folds the agent's own checklist calls in — and nothing else. No tool call ever becomes a
+    /// checklist row: the ✓/■/□ marks are reserved for goals the agent published as goals (#41).
+    ///
+    /// Two shapes, because Claude Code has had two. `TodoWrite` rewrites the whole list on every
+    /// call. `TaskCreate`/`TaskUpdate` — which is what Claude Code 2.1.227 actually ships, with no
+    /// `TodoWrite` tool at all, verified by driving a real plan through a real `PreToolUse` hook
+    /// (#41) — publish it one item at a time.
+    private mutating func applyChecklist(_ event: HookEvent) {
+        let input = event.toolInput?.object
+        switch event.toolName {
+        case "TodoWrite":
+            todos = Self.todos(in: event.toolInput)
+        case "TaskCreate":
+            guard todos.count < Self.retainedTodos,
+                  let label = input?["subject"]?.string ?? input?["description"]?.string,
+                  !label.isEmpty else { return }
+            todos.append(ProgressTodo(
+                label: label,
+                activeLabel: input?["activeForm"]?.string,
+                state: .pending
+            ))
+        case "TaskUpdate":
+            // Ids are read as positions: `TaskCreate`'s payload carries no id (the agent only
+            // learns it from the tool result, which a `PreToolUse` hook never sees) and Claude
+            // Code numbers tasks 1, 2, 3… in the order those events arrive. An id past the end —
+            // VibeNotch attached mid-session and never saw the create — is dropped, not guessed.
+            guard let index = input?["taskId"]?.string.flatMap(Int.init).map({ $0 - 1 }),
+                  todos.indices.contains(index),
+                  let state = input?["status"]?.string.flatMap(TodoState.init(rawValue:)) else {
+                return
+            }
+            todos[index].state = state
+        default:
+            break
         }
     }
 
-    /// The panel's lines, bounded (#15). A published checklist comes first and gets first call on
-    /// the budget — it says more about where a turn is going than the tool calls do — and the
-    /// steps fill whatever is left.
-    static func rows(_ progress: SessionProgress, limit: Int = maxRows) -> [ProgressRow] {
+    /// The panel's rows (#41): the checklist items that still exist, bounded, anchored on the one
+    /// in flight. The first four rows of a ten-item plan are almost always four ✓ and no news; one
+    /// row of finished context above the live one is all the history that earns its place.
+    static func checklist(_ progress: SessionProgress, limit: Int = maxRows) -> [ProgressTodo] {
         guard limit > 0 else { return [] }
-        let todos = window(progress.todos, limit: limit)
-        let stepBudget = limit - todos.count
-        let steps = stepBudget > 0 ? Array(progress.steps.suffix(stepBudget)) : []
-
-        var rows: [ProgressRow] = todos.map(ProgressRow.todo) + steps.map(ProgressRow.step)
-        let total = progress.todos.count + progress.droppedSteps + progress.steps.count
-        let shown = todos.count + steps.count
-        if total > shown { rows.append(.more(total - shown)) }
-        return rows
-    }
-
-    /// Anchors a long checklist on the item actually in flight. The first four rows of a
-    /// ten-item plan are almost always four ✓ and no news; one row of finished context above the
-    /// live one is all the history that earns its place.
-    private static func window(_ todos: [ProgressTodo], limit: Int) -> [ProgressTodo] {
+        let todos = progress.todos.filter { $0.state != .deleted }
         guard todos.count > limit else { return todos }
         let anchor = todos.firstIndex { $0.state == .inProgress } ?? todos.count - 1
         let start = min(max(0, anchor - 1), todos.count - limit)
@@ -145,26 +132,23 @@ struct SessionProgress: Equatable, Sendable {
     }
 
     /// Reads a `TodoWrite` call's `todos` array out of a `PreToolUse` payload.
-    ///
-    /// Note this is fed by the hook stream, not by the transcript: probing every transcript on
-    /// this machine found zero `TodoWrite` entries persisted anywhere (#15), so the checklist can
-    /// only ever come from the live hook payload — which carries the full `tool_input` and would
-    /// light this up the instant an agent publishes one.
     static func todos(in input: JSONValue?) -> [ProgressTodo] {
         guard let value = input?.object?["todos"], case let .array(entries) = value else {
             return []
         }
-        return entries.compactMap { entry in
+        return entries.prefix(retainedTodos).compactMap { entry in
             guard let fields = entry.object else { return nil }
-            let state = fields["status"]?.string.flatMap(TodoState.init(rawValue:)) ?? .pending
-            // `activeForm` is the present-tense phrasing Claude writes for the item it is on
-            // ("Running the tests"); `content` is the imperative one ("Run the tests"). Show
-            // whichever fits the state, and fall back either way rather than dropping the row.
-            let label = (state == .inProgress ? fields["activeForm"]?.string : nil)
-                ?? fields["content"]?.string
-                ?? fields["activeForm"]?.string
-            guard let label, !label.isEmpty else { return nil }
-            return ProgressTodo(label: label, state: state)
+            let activeForm = fields["activeForm"]?.string
+            // Fall back either way rather than dropping a row the agent meant to show.
+            guard let label = fields["content"]?.string ?? activeForm, !label.isEmpty else {
+                return nil
+            }
+            return ProgressTodo(
+                label: label,
+                activeLabel: activeForm,
+                // An unknown status is still a real item — show it rather than dropping it.
+                state: fields["status"]?.string.flatMap(TodoState.init(rawValue:)) ?? .pending
+            )
         }
     }
 
