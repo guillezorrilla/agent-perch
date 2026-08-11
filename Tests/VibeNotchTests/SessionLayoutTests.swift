@@ -119,3 +119,73 @@ final class SessionLayoutTests: XCTestCase {
         )
     }
 }
+
+/// The pure decision behind `FeaturedSessionCard.statusLine` (#31): a hookless session
+/// (`supportsLiveStatus == false`, e.g. Codex or the `agy` CLI) must never render the
+/// "Working…" spinner/text, even while `.active` — only a hook-backed (Claude) session may.
+final class SessionStatusPresentationTests: XCTestCase {
+    func testClaudeWorkingWithNoActivityYetShowsTheSpinner() {
+        XCTAssertEqual(SessionStatusPresentation.of(session(.working, currentActivity: nil)), .workingSpinner)
+    }
+
+    func testClaudeWorkingWithAnActivityDescriptionShowsIt() {
+        XCTAssertEqual(
+            SessionStatusPresentation.of(session(.working, currentActivity: "Editing main.swift")),
+            .activity("Editing main.swift")
+        )
+    }
+
+    func testClaudeNeedsActionAndDoneAreUnaffectedByLiveStatusSupport() {
+        XCTAssertEqual(SessionStatusPresentation.of(session(.needsAction)), .needsAction)
+        XCTAssertEqual(SessionStatusPresentation.of(session(.done)), .done)
+        XCTAssertEqual(SessionStatusPresentation.of(session(.ended)), .done)
+    }
+
+    /// The regression at the heart of #31: a hookless session's `.active` is only "recently
+    /// touched and a live process", never a verified turn — it must render `.neutral`, not the
+    /// spinner, even though `.active` is normally a "busy" status.
+    func testHooklessActiveSessionShowsNeutralNeverTheWorkingSpinner() {
+        XCTAssertEqual(
+            SessionStatusPresentation.of(session(.active, supportsLiveStatus: false)),
+            .neutral
+        )
+    }
+
+    func testHooklessIdleSessionAlsoShowsNeutral() {
+        XCTAssertEqual(
+            SessionStatusPresentation.of(session(.idle, supportsLiveStatus: false)),
+            .neutral
+        )
+    }
+
+    /// A hook-backed (Claude) `.active` session — e.g. mtime-derived before any hook has fired —
+    /// keeps the pre-#31 behavior exactly: still shows the working spinner.
+    func testClaudeActiveSessionStillShowsTheWorkingSpinner() {
+        XCTAssertEqual(SessionStatusPresentation.of(session(.active)), .workingSpinner)
+    }
+
+    private func session(
+        _ status: SessionStatus,
+        currentActivity: String? = nil,
+        supportsLiveStatus: Bool = true
+    ) -> AgentSession {
+        AgentSession(
+            sessionId: "id",
+            agentName: "Claude",
+            cwd: "/tmp/id",
+            modifiedAt: Date(timeIntervalSince1970: 0),
+            status: status,
+            jumpRung: .newTab,
+            title: "id",
+            lastPrompt: nil,
+            tty: nil,
+            terminalName: nil,
+            currentActivity: currentActivity,
+            notificationMessage: nil,
+            pendingToolName: nil,
+            pendingToolInput: nil,
+            resumeCommand: nil,
+            supportsLiveStatus: supportsLiveStatus
+        )
+    }
+}

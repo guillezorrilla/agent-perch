@@ -50,3 +50,38 @@ enum SessionLayout {
         }
     }
 }
+
+/// What a session's status line should show — the pure decision behind
+/// `FeaturedSessionCard.statusLine`, split out the same way `SessionLayout` was so it is testable
+/// without SwiftUI (#21, #31).
+///
+/// A hookless session (Codex, the `agy` CLI — `AgentSession.supportsLiveStatus == false`) can
+/// still be `.active`, and can still land on a full card via `SessionLayout`, but its `.active`
+/// is only ever "recently touched and a live process," never a verified in-flight turn. Claiming
+/// "Working…" for that is exactly the false claim issue #31 is about, so it always renders
+/// `.neutral` instead — regardless of whether its status happens to be `.active` or `.idle`.
+enum SessionStatusPresentation: Equatable {
+    case needsAction
+    case done
+    /// A hook-verified tool call in progress, described in plain language.
+    case activity(String)
+    /// A hook-verified turn in progress with no activity description yet.
+    case workingSpinner
+    /// `.active`/`.idle` with nothing verified behind it — a status dot, no spinner, no text.
+    case neutral
+
+    static func of(_ session: AgentSession) -> SessionStatusPresentation {
+        switch session.status {
+        case .needsAction:
+            return .needsAction
+        case .done, .ended:
+            return .done
+        case .active, .idle, .working:
+            guard session.supportsLiveStatus else { return .neutral }
+            if session.status == .working, let activity = session.currentActivity {
+                return .activity(activity)
+            }
+            return .workingSpinner
+        }
+    }
+}

@@ -46,6 +46,66 @@ final class AntigravityCLILogTests: XCTestCase {
         XCTAssertNil(AntigravityCLILog.workspacePath(at: URL(fileURLWithPath: "/nonexistent/cli.log")))
     }
 
+    /// The exact line that started this bug (issue #31's predecessor): byte-for-byte from a real
+    /// `~/.gemini/antigravity-cli/log/cli-20260810_091658.log`, where `workspace ` sits mid-line
+    /// after Go's own logging preamble rather than at the line's start.
+    func testParsesTheRealGoStyleLogLineWithTheMarkerMidLine() {
+        let realLine = "ERROR: logging before google.Init: I0810 09:16:58.692555       1 manager.go:367] "
+            + "Initializing CLI store manager for workspace /Users/gzorrilla/Developer/personal/vibe-notch"
+        XCTAssertEqual(AntigravityCLILog.workspacePath(in: realLine), "/Users/gzorrilla/Developer/personal/vibe-notch")
+    }
+
+    /// A run started in the home directory itself — verified on the same machine — must still
+    /// parse; the path is exactly `/Users/gzorrilla`, nothing more.
+    func testParsesAWorkspaceThatIsTheHomeDirectoryItself() {
+        let line = "I0810 09:20:00.000000       1 manager.go:367] Initializing CLI store manager for workspace /Users/gzorrilla"
+        XCTAssertEqual(AntigravityCLILog.workspacePath(in: line), "/Users/gzorrilla")
+    }
+
+    /// Two verified-real logs carry no `workspace` text anywhere at all — those sessions must be
+    /// skipped (`nil`), never crash or default to a wrong path.
+    func testLogWithNoWorkspaceTextAnywhereIsNil() {
+        let noMarkerLog = """
+        ERROR: logging before google.Init: I0810 09:16:58.692555       1 manager.go:200] Starting CLI
+        I0810 09:16:58.700000       1 manager.go:210] Loaded config
+        I0810 09:16:59.000000       1 manager.go:400] Ready
+        """
+        XCTAssertNil(AntigravityCLILog.workspacePath(in: noMarkerLog))
+    }
+
+    /// A relative path (or nothing at all) after the marker is rejected outright rather than
+    /// handed to the caller as a bogus cwd.
+    func testRelativePathAfterTheMarkerIsNil() {
+        let line = "I0810 09:16:58.692555       1 manager.go:367] Initializing CLI store manager for workspace relative/path"
+        XCTAssertNil(AntigravityCLILog.workspacePath(in: line))
+    }
+
+    /// Proves the >=64KB bounded read is generous enough: the real marker was observed ~8KB into
+    /// a real log, so a fixture that pads well past that offset before the matching line must
+    /// still be found by `workspacePath(at:)`, which only ever reads a bounded prefix from disk.
+    func testMarkerFoundEightKilobytesIntoALargeLogViaTheBoundedRead() throws {
+        let directory = try makeTemporaryDirectory()
+        let url = directory.appendingPathComponent("cli-padded.log")
+        let padding = String(repeating: "I0810 09:16:58.000000       1 manager.go:100] padding line\n", count: 150)
+        XCTAssertGreaterThan(padding.utf8.count, 8_000, "the padding itself must clear ~8KB before the real line")
+        let content = padding
+            + "I0810 09:16:59.000000       1 manager.go:367] Initializing CLI store manager for workspace /Users/me/project\n"
+        try Data(content.utf8).write(to: url)
+
+        XCTAssertEqual(AntigravityCLILog.workspacePath(at: url), "/Users/me/project")
+    }
+
+    /// The first LINE containing the marker wins — using the real mid-line format, not just the
+    /// bare `workspace <path>` shape, so the "first line wins" rule is proven against the shape
+    /// that actually appears on disk.
+    func testFirstMatchingGoStyleLineWinsWhenMultipleExist() {
+        let text = """
+        I0810 09:16:58.000000       1 manager.go:367] Initializing CLI store manager for workspace /first
+        I0810 09:17:00.000000       1 manager.go:367] Initializing CLI store manager for workspace /second
+        """
+        XCTAssertEqual(AntigravityCLILog.workspacePath(in: text), "/first")
+    }
+
     private func makeTemporaryDirectory() throws -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
@@ -139,12 +199,30 @@ final class AntigravityCLILivenessTests: XCTestCase {
         XCTAssertFalse(AntigravityCLILiveness.hasLiveProcess(cwd: "/repo", processes: processes))
     }
 
-    func testStatusIsActiveWithALiveProcessRegardlessOfStaleMtime() {
+    /// Issue #31: a live process alone used to be enough for `.active` no matter how stale the
+    /// log was — exactly the bug where an `agy` terminal parked at an idle prompt (process still
+    /// running, nothing written in almost an hour) showed as "Working…". A live process next to
+    /// a write older than `activeWriteWindow` must now degrade to `.idle`, same as no process.
+    func testLiveProcessWithAWriteOlderThanTheActiveWriteWindowDegradesToIdle() {
         let now = Date(timeIntervalSince1970: 10_000)
         let processes = [ClaudeProcess(pid: 1, command: "/usr/local/bin/agy", cwd: "/repo", tty: nil)]
         XCTAssertEqual(
             AntigravityCLILiveness.status(
-                cwd: "/repo", modifiedAt: now.addingTimeInterval(-10_000), now: now, processes: processes
+                cwd: "/repo", modifiedAt: now.addingTimeInterval(-5 * 60.0), now: now, processes: processes
+            ),
+            .idle
+        )
+    }
+
+    /// The other half of #31: a live process AND a write within `activeWriteWindow` together are
+    /// still enough for `.active` — the fix narrows what counts as evidence, it doesn't remove
+    /// `.active` altogether.
+    func testLiveProcessWithARecentWriteIsActive() {
+        let now = Date(timeIntervalSince1970: 10_000)
+        let processes = [ClaudeProcess(pid: 1, command: "/usr/local/bin/agy", cwd: "/repo", tty: nil)]
+        XCTAssertEqual(
+            AntigravityCLILiveness.status(
+                cwd: "/repo", modifiedAt: now.addingTimeInterval(-10), now: now, processes: processes
             ),
             .active
         )
@@ -185,6 +263,9 @@ final class AntigravityCLISessionSourceTests: XCTestCase {
         XCTAssertEqual(session.status, .idle)
         XCTAssertEqual(session.resumeCommand, "agy")
         XCTAssertNil(session.sessionFileURL)
+        // `agy` has no hooks — `.active` can never mean more than "live process + recent write"
+        // (issue #31), so `SessionCardView` must never show "Working…" for it.
+        XCTAssertFalse(session.supportsLiveStatus)
     }
 
     func testLogWithNoWorkspaceLineIsSkippedEntirely() throws {
@@ -223,6 +304,19 @@ final class AntigravityCLISessionSourceTests: XCTestCase {
         let discovered = AntigravityCLISessionSource(antigravityCLIHome: home, processProvider: { [] })
             .discover(now: fixedNow)
         XCTAssertTrue(discovered.isEmpty)
+    }
+
+    /// The full #31 regression: a live `agy` process sitting at the session's cwd, but a log
+    /// that hasn't been written to in minutes (a terminal parked at an idle prompt) — the process
+    /// alone must not promote this to `.active`.
+    func testLiveProcessWithAStaleLogDegradesToIdleAtTheSourceLevel() throws {
+        let home = try makeTemporaryDirectory()
+        try makeLog(in: home, name: "cli-20260808_160031.log", workspace: "/Users/me/project", ageSeconds: 5 * 60.0)
+        let liveProcess = ClaudeProcess(pid: 1, command: "/usr/local/bin/agy", cwd: "/Users/me/project", tty: nil)
+
+        let discovered = AntigravityCLISessionSource(antigravityCLIHome: home, processProvider: { [liveProcess] })
+            .discover(now: fixedNow)
+        XCTAssertEqual(discovered.first?.status, .idle)
     }
 
     func testActiveRequiresALiveMatchingProcess() throws {
