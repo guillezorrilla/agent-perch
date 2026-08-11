@@ -627,3 +627,228 @@ extension UsageProviderTests {
         XCTAssertEqual(provider.providers.map(\.provider), ["Claude"])
     }
 }
+
+// MARK: - Per-provider row visibility (#39)
+
+/// The stored set is read on every pass, so a test can flip it mid-run exactly as Settings does.
+private final class HiddenSet: @unchecked Sendable {
+    var names: Set<String>
+    init(_ names: Set<String> = []) { self.names = names }
+}
+
+extension UsageProviderTests {
+    private func visibleStub(_ name: String, windows: Int = 1) -> StubUsageSource {
+        StubUsageSource(name: name, results: [
+            .success(ProviderUsage(
+                provider: name,
+                windows: (0..<windows).map { UsageWindow(label: "w\($0)", utilization: 10, resetsAt: Date()) }
+            ))
+        ])
+    }
+
+    /// How many lines the strip would actually draw for the rows it has — the visible cost of a
+    /// provider, which for Antigravity is two.
+    @MainActor
+    private func drawnLines(_ provider: UsageProvider) -> Int {
+        provider.rows.reduce(0) { total, row in
+            switch row {
+            case .usage(let usage): total + UsageStripView.windowLines(usage.windows).count
+            case .unavailable: total + 1
+            }
+        }
+    }
+
+    /// Nothing hidden is the default, and the default is what every existing install already has:
+    /// an absent key must mean "show everything", not "show nothing".
+    @MainActor
+    func testEveryRegisteredProviderIsShownByDefault() async {
+        let sources = ["Claude", "Codex", "Kiro"].map { visibleStub($0) }
+        let provider = UsageProvider(sources: sources, minFetchInterval: 0, hiddenProviders: { [] })
+
+        await provider.refresh()
+
+        XCTAssertEqual(provider.registeredProviders, ["Claude", "Codex", "Kiro"])
+        XCTAssertEqual(provider.rows.map(\.provider), ["Claude", "Codex", "Kiro"])
+        XCTAssertFalse(provider.allProvidersHidden)
+    }
+
+    @MainActor
+    func testHidingOneProviderRemovesExactlyThatRow() async {
+        let sources = ["Claude", "Codex", "Kiro"].map { visibleStub($0) }
+        let provider = UsageProvider(
+            sources: sources,
+            minFetchInterval: 0,
+            hiddenProviders: { ["Codex"] }
+        )
+
+        await provider.refresh()
+
+        XCTAssertEqual(provider.rows.map(\.provider), ["Claude", "Kiro"])
+        XCTAssertFalse(provider.allProvidersHidden)
+    }
+
+    /// Antigravity is the whole reason for the feature: four windows, two rendered lines. Hiding
+    /// it has to reclaim both, not leave a widowed second line behind.
+    @MainActor
+    func testHidingAMultiWindowProviderTakesBothOfItsLinesWithIt() async {
+        let hidden = HiddenSet()
+        let provider = UsageProvider(
+            sources: [visibleStub("Claude", windows: 2), visibleStub("Antigravity", windows: 4)],
+            minFetchInterval: 0,
+            hiddenProviders: { hidden.names }
+        )
+
+        await provider.refresh()
+        XCTAssertEqual(drawnLines(provider), 3, "Claude draws one line, Antigravity two")
+
+        hidden.names = ["Antigravity"]
+        provider.visibilityDidChange()
+
+        XCTAssertEqual(provider.rows.map(\.provider), ["Claude"])
+        XCTAssertEqual(drawnLines(provider), 1, "both of Antigravity's lines go, not just the first")
+    }
+
+    /// Hiding everything must leave no rows AND no strip — the "usage unavailable" box is an
+    /// admission of failure, and there is no failure here.
+    @MainActor
+    func testHidingEveryProviderCollapsesTheStripCleanly() async {
+        let provider = UsageProvider(
+            sources: [visibleStub("Claude"), visibleStub("Codex")],
+            minFetchInterval: 0,
+            hiddenProviders: { ["Claude", "Codex"] }
+        )
+
+        await provider.refresh()
+
+        XCTAssertTrue(provider.rows.isEmpty)
+        XCTAssertTrue(provider.allProvidersHidden)
+    }
+
+    /// An aggregator with no sources at all is not "everything hidden" — it keeps the old empty
+    /// strip, so the collapse is only ever the user's own doing.
+    @MainActor
+    func testAnEmptyAggregatorIsNotTheSameAsEverythingHidden() {
+        XCTAssertFalse(UsageProvider(sources: [], minFetchInterval: 0, hiddenProviders: { [] }).allProvidersHidden)
+    }
+
+    /// Kiro's read spawns a subprocess; a row nobody wants must not cost one.
+    @MainActor
+    func testAHiddenProviderIsNotPolledAtAll() async {
+        let claude = visibleStub("Claude")
+        let kiro = visibleStub("Kiro")
+        let provider = UsageProvider(
+            sources: [claude, kiro],
+            minFetchInterval: 0,
+            hiddenProviders: { ["Kiro"] }
+        )
+
+        await provider.refresh()
+        await provider.forceRefresh()
+
+        XCTAssertEqual(kiro.fetchCount, 0)
+        XCTAssertEqual(claude.fetchCount, 2, "hiding one provider must not disturb the others' fetches")
+    }
+
+    /// The other half of skipping the work: being hidden never stamps the throttle, so the very
+    /// next refresh after unhiding fetches instead of serving a cache the provider never earned.
+    @MainActor
+    func testUnhidingFetchesOnTheNextRefreshRatherThanWaitingOutTheThrottle() async {
+        let hidden = HiddenSet(["Codex"])
+        let claude = visibleStub("Claude")
+        let codex = visibleStub("Codex")
+        let provider = UsageProvider(
+            sources: [claude, codex],
+            minFetchInterval: 999,
+            hiddenProviders: { hidden.names }
+        )
+
+        await provider.refresh()
+        XCTAssertEqual(codex.fetchCount, 0)
+
+        hidden.names = []
+        provider.visibilityDidChange()
+        await provider.refresh()
+
+        XCTAssertEqual(codex.fetchCount, 1, "un-hidden inside the throttle window, and still due")
+        XCTAssertEqual(claude.fetchCount, 1, "the provider that did spend its window stays throttled")
+        XCTAssertEqual(provider.rows.map(\.provider), ["Claude", "Codex"])
+    }
+
+    /// The #28 invariant is about *silent* vanishing. A hidden provider leaves no row at all; a
+    /// broken one still says so — and hiding one never disguises the other.
+    @MainActor
+    func testAHiddenProviderIsNotConfusedWithAFailedOne() async {
+        let hidden = HiddenSet(["Claude"])
+        let claude = visibleStub("Claude")
+        let codex = StubUsageSource(name: "Codex", results: [.failure(UsageSourceError.httpStatus(500))])
+        let provider = UsageProvider(
+            sources: [claude, codex],
+            minFetchInterval: 0,
+            hiddenProviders: { hidden.names }
+        )
+
+        await provider.refresh()
+        XCTAssertEqual(
+            provider.rows,
+            [.unavailable(provider: "Codex", detail: "usage unavailable")],
+            "the hidden provider is simply gone; the broken one keeps its visible admission"
+        )
+
+        // And it goes both ways: hide the failure, unhide the healthy one.
+        hidden.names = ["Codex"]
+        provider.visibilityDidChange()
+        await provider.refresh()
+
+        XCTAssertEqual(provider.rows.map(\.provider), ["Claude"])
+        XCTAssertEqual(provider.providers.first?.windows.count, 1, "unhiding restores the numbers as they were")
+    }
+
+    /// A provider that used to exist leaves its name behind in the stored set forever. It must
+    /// mean nothing rather than break the decode or hide a row by accident.
+    @MainActor
+    func testAnIdentifierForAProviderThatNoLongerExistsIsIgnored() async {
+        let provider = UsageProvider(
+            sources: [visibleStub("Claude"), visibleStub("Codex")],
+            minFetchInterval: 0,
+            hiddenProviders: { ["Bard", "", "Windsurf"] }
+        )
+
+        await provider.refresh()
+
+        XCTAssertEqual(provider.rows.map(\.provider), ["Claude", "Codex"])
+        XCTAssertFalse(provider.allProvidersHidden)
+    }
+}
+
+/// The storage format itself, exercised without going anywhere near `@AppStorage`.
+final class UsageVisibilityStorageTests: XCTestCase {
+    func testAnAbsentOrEmptyKeyHidesNothing() {
+        XCTAssertEqual(UsageVisibility.decode(""), [])
+        XCTAssertEqual(UsageVisibility.decode(" , ,,"), [], "ragged separators must not hide a nameless row")
+    }
+
+    /// Display names are free text — spaces, slashes, punctuation, non-ASCII — and every one of
+    /// them has to survive the trip to defaults and back.
+    func testTheHiddenSetRoundTripsThroughStorageIncludingOddIdentifiers() throws {
+        let odd: Set<String> = ["Claude", "Antigravity (Gemini)", "GPT-5.4 / Codex", "kiro-cli", "Ωmega", "a b  c"]
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "vibenotch.usage-visibility.tests"))
+        defaults.removePersistentDomain(forName: "vibenotch.usage-visibility.tests")
+
+        defaults.set(UsageVisibility.encode(odd), forKey: UsageVisibility.hiddenKey)
+
+        XCTAssertEqual(UsageVisibility.hidden(in: defaults), odd)
+    }
+
+    /// Sorted output is what lets the setter recognize a write that changes nothing and skip
+    /// telling the strip to redraw.
+    func testEncodingIsOrderIndependent() {
+        XCTAssertEqual(UsageVisibility.encode(["Codex", "Claude"]), UsageVisibility.encode(["Claude", "Codex"]))
+        XCTAssertEqual(UsageVisibility.encode(["Codex", "Claude"]), "Claude,Codex")
+    }
+
+    func testAnUnsetKeyIsNotHiddenEverything() throws {
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "vibenotch.usage-visibility.unset"))
+        defaults.removePersistentDomain(forName: "vibenotch.usage-visibility.unset")
+        XCTAssertEqual(UsageVisibility.hidden(in: defaults), [])
+    }
+}

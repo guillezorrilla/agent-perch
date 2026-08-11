@@ -28,8 +28,13 @@ struct NotchContentView: View {
         Group {
             if !store.sessions.isEmpty {
                 VStack(alignment: .leading, spacing: 10) {
-                    UsageStripView(rows: usageProvider.rows) {
-                        Task { await usageProvider.forceRefresh() }
+                    // Switching every provider off removes the strip whole — the VStack's spacing
+                    // goes with it, so the first card lands where it would with no strip at all,
+                    // rather than under an empty box or a stray gap (#39).
+                    if !usageProvider.allProvidersHidden {
+                        UsageStripView(rows: usageProvider.rows) {
+                            Task { await usageProvider.forceRefresh() }
+                        }
                     }
 
                     ForEach(layout.fullCards) { session in
@@ -322,7 +327,7 @@ struct UsageStripView: View {
     }
 
     private func providerRow(_ usage: ProviderUsage) -> some View {
-        let lines = windowLines(usage.windows)
+        let lines = Self.windowLines(usage.windows)
         return HStack(alignment: .top, spacing: 7) {
             Text(glyph(for: usage.provider))
                 .foregroundStyle(.white)
@@ -354,7 +359,9 @@ struct UsageStripView: View {
 
     /// Two windows to a line. Claude and Codex have at most two and are untouched; Antigravity
     /// meters four at once, and four on one line runs off the end of the panel (#18).
-    private func windowLines(_ windows: [UsageWindow]) -> [[UsageWindow]] {
+    ///
+    /// Static so a test can count the lines a strip would draw without standing up a view (#39).
+    static func windowLines(_ windows: [UsageWindow]) -> [[UsageWindow]] {
         guard !windows.isEmpty else { return [] }
         return stride(from: 0, to: windows.count, by: 2).map {
             Array(windows[$0..<min($0 + 2, windows.count)])
