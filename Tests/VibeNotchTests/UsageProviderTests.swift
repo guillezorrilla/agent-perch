@@ -400,6 +400,33 @@ final class RuntimeUsageTokenSourceTests: XCTestCase {
         XCTAssertEqual(script.calls, 2, "retried once, never in a loop")
     }
 
+    /// The real -60008/-25320 pair: the keychain needed to raise its dialog and the machine had no
+    /// way to draw one. Unlike a refusal, nothing about that is the user's decision, so it must not
+    /// be memoized — the strip showed "keychain unavailable" for hours after a moment that had long
+    /// since passed, and only the refresh button could clear it.
+    func testAFailedReadIsNotRememberedAndIsReattemptedOnTheNextRefresh() async {
+        let script = Script([(errSecInDarkWake, nil)])
+        let tokenSource = source(script)
+
+        let first = await tokenSource.read()
+        XCTAssertEqual(first, .unreadable("keychain unavailable"))
+        XCTAssertEqual(script.calls, 2)
+
+        _ = await tokenSource.read()
+        XCTAssertEqual(script.calls, 4, "a transient failure must be re-read, not replayed forever")
+    }
+
+    /// And when the circumstance clears, the row recovers on its own.
+    func testAFailedReadRecoversWithoutTheUserPressingRetry() async {
+        let script = Script([(errSecInDarkWake, nil), (errSecInDarkWake, nil), (errSecSuccess, Self.credentialsJSON)])
+        let tokenSource = source(script)
+
+        let duringDarkWake = await tokenSource.read()
+        XCTAssertEqual(duringDarkWake, .unreadable("keychain unavailable"))
+        let afterWaking = await tokenSource.read()
+        XCTAssertEqual(afterWaking, .token("tok-abc"))
+    }
+
     /// An item that IS there but whose contents can't be parsed is still not "unconfigured".
     func testUnparsableKeychainContentsAreUnreadable() async {
         let script = Script([(errSecSuccess, Data("not json".utf8))])
