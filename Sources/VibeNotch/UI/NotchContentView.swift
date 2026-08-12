@@ -138,9 +138,15 @@ struct NotchContentView: View {
     private func pendingCard(_ pending: PendingAction, for session: AgentSession) -> some View {
         switch pending {
         case let .permission(request):
-            PermissionRequestCard(request: request) { decision in
-                respond(decision, to: session)
-            }
+            PermissionRequestCard(
+                request: request,
+                onSelect: { option in
+                    let affirmatives = PermissionRequestCard.affirmatives(forTool: request.toolName)
+                    guard affirmatives.indices.contains(option - 1) else { return }
+                    respond(option: option, in: session, label: affirmatives[option - 1].label)
+                },
+                onDecision: { decision in respond(decision, to: session) }
+            )
         case let .plan(markdown):
             PlanReviewCard(markdown: markdown) { option in
                 respond(option: option, in: session, label: PlanReviewCard.options[option - 1].label)
@@ -172,6 +178,10 @@ struct NotchContentView: View {
             // choice a user pressing "Approve" is least likely to have meant (#66). The plan
             // card names its three real options; nothing else answers it.
             return
+        case let (.permission(request), .option(number)):
+            let affirmatives = PermissionRequestCard.affirmatives(forTool: request.toolName)
+            guard affirmatives.indices.contains(number - 1) else { return }
+            respond(option: number, in: session, label: affirmatives[number - 1].label)
         case (_, .allow):
             respond(.allow, to: session)
         case (_, .deny):
