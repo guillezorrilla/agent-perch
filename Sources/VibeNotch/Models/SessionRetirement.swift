@@ -40,17 +40,6 @@ struct SessionRetirement {
     /// covers the cold-start window where the cache has nothing at all.
     static let processAbsenceGrace: TimeInterval = 30.0
 
-    /// How long a session with nothing running behind it stays on screen after its last activity.
-    ///
-    /// Not zero: #10 shows recently-finished sessions ON PURPOSE — the tab you just closed is the
-    /// one you most want to jump back to, and a session that finished a minute ago is still worth
-    /// resuming. Not the 60 minutes `SessionStatus.at` grants a transcript either: that window
-    /// exists to decide whether a FILE is worth reading, and applying it to a session whose process
-    /// exited is what put four dead `vn-progress` rows in a panel that had three real sessions in
-    /// it (#46). Five minutes is long enough to come back to something you just finished, short
-    /// enough that the panel stays a list of what is happening rather than of what happened.
-    static let finishedSessionGrace: TimeInterval = 5 * 60.0
-
     /// The grace an explicit `SessionEnd` gets before its row is dropped — the same half minute
     /// `SessionStore.reconcile` already gives hook state that outranks the transcript, so a session
     /// is seen to finish rather than vanishing mid-glance.
@@ -142,9 +131,13 @@ struct SessionRetirement {
     ///   a newer write is newer truth. A `claude --resume` of that id really would put a process
     ///   back; no process means it was just the transcript's last flush landing after the hook.
     /// - No `SessionEnd` at all — a killed session never sends one — so process absence is the
-    ///   only evidence there will ever be. It has to be sustained for `processAbsenceGrace`, and
-    ///   the session has to have been quiet for `finishedSessionGrace` on top of that, so a
-    ///   session the user just finished still gets its moment on screen (#10).
+    ///   only evidence there will ever be, and it has to be sustained for `processAbsenceGrace`.
+    ///
+    ///   This used to wait out a further five minutes of quiet on top (#10, "the tab you just
+    ///   closed is the one you most want to jump back to"). That grace is gone: it put SEVEN rows
+    ///   in a panel with three live sessions behind it (#64), and what it was protecting turned
+    ///   out to be worth little — jumping to a dead Claude row only opens a fresh shell at its
+    ///   cwd, it does not resume the session. The panel is a list of what is running now.
     private func retirementDate(
         for session: AgentSession,
         liveness: SessionLiveness,
@@ -153,10 +146,7 @@ struct SessionRetirement {
         guard liveness.isAbsent else { return nil }
         if ended { return session.modifiedAt.addingTimeInterval(Self.endedGrace) }
         guard let absentSince = absentSince[session.sessionId] else { return nil }
-        return max(
-            absentSince.addingTimeInterval(Self.processAbsenceGrace),
-            session.modifiedAt.addingTimeInterval(Self.finishedSessionGrace)
-        )
+        return absentSince.addingTimeInterval(Self.processAbsenceGrace)
     }
 
     private mutating func observe(_ liveness: [String: SessionLiveness], now: Date) {
