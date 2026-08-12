@@ -16,14 +16,22 @@ endif
 
 .PHONY: app run
 
+# The bundle is UPDATED IN PLACE, never deleted and recreated. macOS books TCC grants
+# against the app bundle, so `rm -rf` on the .app threw away "access data from other apps"
+# — the consent needed to read Warp's sqlite for tab-exact jump and answer — on every
+# single build, re-prompting the user forever. Same class of bug as ad-hoc signing losing
+# the Accessibility grant, which the SIGN_ID comment above already guards against.
+#
+# The executable is unlinked first rather than copied over: replacing a RUNNING Mach-O in
+# place fails with ETXTBSY, and unlinking does not disturb the process already running it.
 app:
 	$(SWIFT) build -c release $(SWIFT_FLAGS)
-	rm -rf -- "$(APP)"
 	mkdir -p "$(APP)/Contents/MacOS"
+	rm -f -- "$(APP)/Contents/MacOS/VibeNotch"
 	cp ".build/release/VibeNotch" "$(APP)/Contents/MacOS/VibeNotch"
 	cp "Support/Info.plist" "$(APP)/Contents/Info.plist"
 	@echo "Signing with identity: $(SIGN_ID)"
-	codesign --force --deep -s "$(SIGN_ID)" "$(APP)"
+	codesign --force -s "$(SIGN_ID)" "$(APP)"
 
 run: app
 	open "$(APP)"
