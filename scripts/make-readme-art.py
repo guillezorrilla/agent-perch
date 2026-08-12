@@ -217,7 +217,7 @@ def menu_bar(x, y, w):
     out.append(f'<rect x="{x + 12}" y="{y + 3}" width="4" height="5" rx="2" fill="#1A1830"/>')
     out.append(text(x + 32, y + 16, "VibeNotch", size="11.5", fill="#F2F2F5", weight="600"))
     # Only what fits clear of the panel: a menu title sliced in half reads as a rendering bug.
-    for i, m in enumerate(["File", "Edit", "View"]):
+    for i, m in enumerate(["File", "Edit"]):
         out.append(text(x + 100 + i * 44, y + 16, m, size="11.5", fill="#DCDCE2"))
     rx = x + w
     out.append(text(rx - 12, y + 16, "Tue 9:41", size="11.5", fill="#F2F2F5", anchor="end"))
@@ -253,124 +253,150 @@ def terminal_window(x, y, w, h, title, lines):
     return "\n".join(out)
 
 
-def hero():
-    """The panel where it actually lives: hanging from the notch, over the desktop it watches."""
-    w, h = 1100, 600
+def mac_frame(panel_h, panel_body, windows, w=1100, h=600, panel_w=640):
+    """Every image is the same shot: the panel hanging from the notch of a real screen.
+
+    A card floating on its own never showed WHERE it appears, which is the one thing about
+    this app that needs a picture. Sharing the frame also means the four images read as one
+    product rather than four unrelated crops.
+    """
     bezel = 12
     sw, sh = w - bezel * 2, h - bezel * 2
-    panel_w = 596
     panel_x = (w - panel_w) / 2
-    panel_h = 262
 
     b = [wallpaper_defs()]
-    b.append(f'<clipPath id="screen"><rect x="{bezel}" y="{bezel}" width="{sw}" height="{sh}" rx="18"/></clipPath>')
+    b.append(f'<clipPath id="screen"><rect x="{bezel}" y="{bezel}" width="{sw}" '
+             f'height="{sh}" rx="18"/></clipPath>')
     b.append(rect(0, 0, w, h, "#0A0A0C", r=30))
     b.append('<g clip-path="url(#screen)">')
     b.append(wallpaper(bezel, bezel, sw, sh))
     b.append(rect(bezel, bezel, sw, 26, "#000000", opacity=0.38))
     b.append(menu_bar(bezel + 14, bezel + 4, sw - 28))
-
-    # The work the notch is reporting on, arranged so all three titles stay readable.
-    b.append(terminal_window(70, 330, 372, 214, "gemini — web-dashboard", [
-        ("dot", "Analyzing the slow queries."),
-        ("dot", "Read(schema.prisma)"),
-        ("sub", "1.2 KB"),
-        ("dot", "Edit(src/db/queries.ts)"),
-        ("sub", "Updated (+8 -23)"),
-    ]))
-    b.append(terminal_window(646, 306, 384, 206, "codex — checkout-flow", [
-        ("dot", "Building the REST endpoints."),
-        ("dot", "Write(src/routes/users.ts)"),
-        ("sub", "New file (47 lines)"),
-    ]))
-    b.append(terminal_window(330, 392, 430, 190, "claude — api-gateway", [
-        ("dot", "Edit(src/auth/middleware.ts)"),
-        ("sub", "Updated (+3 -1)"),
-        ("dot", "Bash(npm test)"),
-        ("sub", "8 passed"),
-        ("ok", "All done. 3 files changed."),
-    ]))
-
-    # Flush and square at the top because it grows out of the notch, rounded only at the
-    # bottom — how DynamicNotchKit draws it. The halo is the brand colour, not a macOS shadow.
+    for win in windows:
+        b.append(terminal_window(*win))
     b.append('<g filter="url(#halo)">')
     b.append(f'<path d="M {panel_x} {bezel} h {panel_w} v {panel_h - 26} '
              f'a 26 26 0 0 1 -26 26 h {-(panel_w - 52)} a 26 26 0 0 1 -26 -26 Z" fill="#050505"/>')
     b.append('</g>')
     b.append('</g>')
-
-    ix = panel_x + 20
-    iw = panel_w - 40
-    b.append(usage_strip(ix, bezel + 30, iw))
-    y = bezel + 78
-    b.append(full_card(ix, y, iw, "api-gateway", "You: fix the auth bug in middleware",
-                       "Done — click to jump", GREEN, "28m",
-                       glyph_color=GREEN, frame=REST, terminal="iTerm", h=74))
-    b.append(compact_row(ix, y + 86, iw, "checkout-flow", "1h", dot=BLUE))
-    b.append(compact_row(ix, y + 128, iw, "web-dashboard", "5h", dot=GREEN))
+    b.append(panel_body(panel_x + 20, bezel, panel_w - 40))
     return svg(w, h, "\n".join(b), bg="#000000", radius=30)
 
 
+WINDOWS = [
+    (70, 330, 372, 214, "gemini — web-dashboard", [
+        ("dot", "Analyzing the slow queries."),
+        ("dot", "Read(schema.prisma)"),
+        ("sub", "1.2 KB"),
+        ("dot", "Edit(src/db/queries.ts)"),
+        ("sub", "Updated (+8 -23)"),
+    ]),
+    (646, 306, 384, 206, "codex — checkout-flow", [
+        ("dot", "Building the REST endpoints."),
+        ("dot", "Write(src/routes/users.ts)"),
+        ("sub", "New file (47 lines)"),
+    ]),
+    (330, 392, 430, 190, "claude — api-gateway", [
+        ("dot", "Edit(src/auth/middleware.ts)"),
+        ("sub", "Updated (+3 -1)"),
+        ("dot", "Bash(npm test)"),
+        ("sub", "8 passed"),
+        ("ok", "All done. 3 files changed."),
+    ]),
+]
+
+# The lower two windows only, for the taller cards — the panel would cover the rest anyway.
+LOW_WINDOWS = [WINDOWS[0], WINDOWS[1]]
+
+
+def hero():
+    def body(x, y, w):
+        b = [usage_strip(x, y + 30, w)]
+        yy = y + 78
+        b.append(full_card(x, yy, w, "api-gateway", "You: fix the auth bug in middleware",
+                           "Done — click to jump", GREEN, "28m",
+                           glyph_color=GREEN, frame=REST, terminal="iTerm", h=74))
+        b.append(compact_row(x, yy + 86, w, "checkout-flow", "1h", dot=BLUE))
+        b.append(compact_row(x, yy + 128, w, "web-dashboard", "5h", dot=GREEN))
+        return "\n".join(b)
+    return mac_frame(262, body, WINDOWS, panel_w=596)
+
+
 def permission_card():
-    w, h = 620, 300
-    b = [rect(20, 16, w - 40, h - 32, CARD, r=16)]
-    b.append(f'<circle cx="42" cy="44" r="3.5" fill="{AMBER}"/>')
-    b.append(text(56, 48, "Permission Request", size=11, fill=GRAY, weight="500"))
-    b.append(text(38, 78, "⚠︎", size=13, fill=AMBER))
-    b.append(text(60, 78, "Write", size=13, fill=AMBER, weight="600"))
-    b.append(text(108, 78, "src/config/version.txt", size=12, fill=WHITE, font=MONO))
-    b.append(rect(38, 92, w - 76, 44, PANEL, r=9))
-    b.append(rect(46, 100, w - 92, 20, "#173D25", r=4))
-    b.append(text(54, 114, "+approved", size=11, fill=GREEN, font=MONO))
-    b.append(text(54, 132, "+1 −0", size=10, fill=GRAY, font=MONO))
-    b.append(option_row(38, 148, w - 76, 1, "Yes", "Just this once", AMBER))
-    b.append(option_row(38, 196, w - 76, 2, "Yes, allow all edits this session",
-                        "Stops this card coming back", AMBER))
-    b.append(rect(38, 244, w - 76, 32, PANEL, r=16))
-    b.append(text(w / 2, 265, "Deny ⌘N", size=12, fill=WHITE, weight="500", anchor="middle"))
-    return svg(w, h, "\n".join(b), bg="#0B0B0B")
+    def body(x, y, w):
+        b = [usage_strip(x, y + 30, w)]
+        top = y + 96
+        b.append(rect(x, top - 22, w, 268, CARD, r=16))
+        b.append(f'<circle cx="{x + 16}" cy="{top}" r="3.5" fill="{AMBER}"/>')
+        cx = x + 16
+        cw = w - 32
+        b.append(text(x + 30, top + 4, "Permission Request", size=11, fill=GRAY, weight="500"))
+        b.append(text(cx, top + 34, "⚠︎", size=13, fill=AMBER))
+        b.append(text(cx + 22, top + 34, "Write", size=13, fill=AMBER, weight="600"))
+        b.append(text(cx + 70, top + 34, "src/config/version.txt", size=12, fill=WHITE, font=MONO))
+        b.append(rect(cx, top + 48, cw, 44, PANEL, r=9))
+        b.append(rect(cx + 8, top + 56, cw - 16, 20, "#173D25", r=4))
+        b.append(text(cx + 16, top + 70, "+approved", size=11, fill=GREEN, font=MONO))
+        b.append(text(cx + 16, top + 88, "+1 −0", size=10, fill=GRAY, font=MONO))
+        b.append(option_row(cx, top + 102, cw, 1, "Yes", "Just this once", AMBER))
+        b.append(option_row(cx, top + 150, cw, 2, "Yes, allow all edits this session",
+                            "Stops this card coming back", AMBER))
+        b.append(rect(cx, top + 198, cw, 32, PANEL, r=16))
+        b.append(text(x + w / 2, top + 219, "Deny ⌘N", size=12, fill=WHITE,
+                      weight="500", anchor="middle"))
+        return "\n".join(b)
+    return mac_frame(366, body, LOW_WINDOWS, panel_w=640, h=620)
 
 
 def question_card():
-    w, h = 620, 286
-    b = [rect(20, 16, w - 40, h - 32, CARD, r=16)]
-    b.append(f'<circle cx="42" cy="44" r="3.5" fill="{BLUE}"/>')
-    b.append(text(56, 48, "Claude asks", size=11, fill=GRAY, weight="500"))
-    b.append(text(38, 76, "Which fruit should I use?", size=13, fill=WHITE, weight="600"))
-    for i, (lab, desc) in enumerate([
-        ("Apple", "The safe default"),
-        ("Banana", "Sweeter, ships sooner"),
-        ("Cherry", "Small and fast"),
-        ("Date", "Dense, chewy, divisive"),
-    ]):
-        b.append(option_row(38, 92 + i * 48, w - 76, i + 1, lab, desc, BLUE))
-    return svg(w, h, "\n".join(b), bg="#0B0B0B")
+    def body(x, y, w):
+        b = [usage_strip(x, y + 30, w)]
+        top = y + 96
+        cx, cw = x + 16, w - 32
+        b.append(rect(x, top - 22, w, 224, CARD, r=16))
+        b.append(f'<circle cx="{x + 16}" cy="{top}" r="3.5" fill="{BLUE}"/>')
+        b.append(text(x + 30, top + 4, "Claude asks", size=11, fill=GRAY, weight="500"))
+        b.append(text(cx, top + 32, "Which deployment target?", size=13, fill=WHITE, weight="600"))
+        for i, (lab, desc) in enumerate([
+            ("Production", "Live traffic, no undo"),
+            ("Staging", "Mirrors production, safe to break"),
+            ("Local only", "Nothing leaves this machine"),
+        ]):
+            b.append(option_row(cx, top + 48 + i * 48, cw, i + 1, lab, desc, BLUE))
+        return "\n".join(b)
+    return mac_frame(322, body, LOW_WINDOWS, panel_w=640)
 
 
 def plan_card():
-    w, h = 620, 400
-    b = [rect(20, 16, w - 40, h - 32, CARD, r=16)]
-    b.append(f'<circle cx="42" cy="44" r="3.5" fill="{BLUE}"/>')
-    b.append(text(56, 48, "Plan Review", size=11, fill=GRAY, weight="500"))
-    b.append(rect(38, 62, w - 76, 158, PANEL, r=9))
-    b.append(text(54, 84, "Context", size=13, fill=WHITE, weight="600"))
-    b.append(text(54, 104, "The tool has no way to report which version is", size=12, fill="#E5E5EA"))
-    b.append(text(54, 120, "installed, so bug reports can't be tied to a build.", size=12, fill="#E5E5EA"))
-    b.append(text(54, 146, "Plan", size=13, fill=WHITE, weight="600"))
-    for i, line in enumerate([
-        "Keep the version in one place: __version__",
-        "Add --version to the argparse parser",
-        "Assert it exits 0 and prints the version",
-    ]):
-        b.append(text(54, 166 + i * 18, f"{i + 1}.", size=12, fill=BLUE, weight="500"))
-        b.append(text(74, 166 + i * 18, line, size=12, fill="#E5E5EA"))
-    for i, (lab, desc) in enumerate([
-        ("Yes, and use auto mode", "Claude edits without asking again"),
-        ("Yes, manually approve edits", "Every edit still asks first"),
-        ("Tell Claude what to change", "Opens the session so you can type feedback"),
-    ]):
-        b.append(option_row(38, 232 + i * 48, w - 76, i + 1, lab, desc, BLUE))
-    return svg(w, h, "\n".join(b), bg="#0B0B0B")
+    def body(x, y, w):
+        b = [usage_strip(x, y + 30, w)]
+        top = y + 96
+        cx, cw = x + 16, w - 32
+        b.append(rect(x, top - 22, w, 358, CARD, r=16))
+        b.append(f'<circle cx="{x + 16}" cy="{top}" r="3.5" fill="{BLUE}"/>')
+        b.append(text(x + 30, top + 4, "Plan Review", size=11, fill=GRAY, weight="500"))
+        b.append(rect(cx, top + 18, cw, 150, PANEL, r=9))
+        b.append(text(cx + 16, top + 40, "Context", size=13, fill=WHITE, weight="600"))
+        b.append(text(cx + 16, top + 60, "The tool has no way to report which version is",
+                      size=12, fill="#E5E5EA"))
+        b.append(text(cx + 16, top + 76, "installed, so bug reports can't be tied to a build.",
+                      size=12, fill="#E5E5EA"))
+        b.append(text(cx + 16, top + 102, "Plan", size=13, fill=WHITE, weight="600"))
+        for i, line in enumerate([
+            "Keep the version in one place: __version__",
+            "Add --version to the argparse parser",
+            "Assert it exits 0 and prints the version",
+        ]):
+            b.append(text(cx + 16, top + 122 + i * 18, f"{i + 1}.", size=12, fill=BLUE, weight="500"))
+            b.append(text(cx + 36, top + 122 + i * 18, line, size=12, fill="#E5E5EA"))
+        for i, (lab, desc) in enumerate([
+            ("Yes, and use auto mode", "Claude edits without asking again"),
+            ("Yes, manually approve edits", "Every edit still asks first"),
+            ("Tell Claude what to change", "Opens the session so you can type feedback"),
+        ]):
+            b.append(option_row(cx, top + 182 + i * 48, cw, i + 1, lab, desc, BLUE))
+        return "\n".join(b)
+    return mac_frame(456, body, LOW_WINDOWS, panel_w=640, h=700)
 
 
 if __name__ == "__main__":
