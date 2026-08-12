@@ -232,7 +232,23 @@ struct PermissionRequestCard: View {
 
 struct PlanReviewCard: View {
     let markdown: String
-    let onDecision: (ActionDecision) -> Void
+    let onSelect: (Int) -> Void
+
+    /// Claude Code's own plan prompt, in its own order — the card exists to answer THAT prompt, and
+    /// ⌘1…⌘3 type the matching digit into it.
+    ///
+    /// Approve/Deny was not just incomplete, it was misleading: "Approve" typed a `1`, and `1` on
+    /// this prompt is *auto mode*, not the manual approval the button implied (#66). Naming the
+    /// three real choices is the only way the card can be honest about what it is about to send.
+    ///
+    /// Coupled to another app's wording by construction. The DIGITS are the contract — those have
+    /// been stable — and the labels are what the user reads before pressing one, so a wording drift
+    /// shows up as a stale label rather than a wrong keystroke.
+    static let options: [(label: String, description: String)] = [
+        ("Yes, and use auto mode", "Claude edits without asking again"),
+        ("Yes, manually approve edits", "Every edit still asks first"),
+        ("Tell Claude what to change", "Opens the session so you can type feedback")
+    ]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 11) {
@@ -246,36 +262,88 @@ struct PlanReviewCard: View {
             }
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 3) {
-                    ForEach(Array(PlanMarkdown.lines(markdown).enumerated()), id: \.offset) { _, line in
-                        Text(Self.rendered(line.body))
-                            .font(.system(
-                                size: line.isHeading ? 13 : 12,
-                                weight: line.isHeading ? .semibold : .regular
-                            ))
-                            .padding(.top, line.isHeading ? 5 : 0)
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(Array(PlanMarkdown.blocks(markdown).enumerated()), id: \.offset) { _, block in
+                        blockView(block)
                     }
                 }
                 .foregroundStyle(.white.opacity(0.9))
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(maxHeight: 300)
+            .frame(maxHeight: 280)
             .padding(11)
             .background(Color.vibePanel, in: RoundedRectangle(cornerRadius: 9))
 
-            ActionButtons(
-                negativeTitle: "Reject ⌘N",
-                positiveTitle: "Approve ⌘Y",
-                onDecision: onDecision
-            )
+            VStack(spacing: 6) {
+                ForEach(Self.options.indices, id: \.self) { index in
+                    optionButton(at: index)
+                }
+            }
         }
         .padding(14)
         .background(Color.vibeCard, in: RoundedRectangle(cornerRadius: 16))
         .accessibilityElement(children: .contain)
     }
 
-    /// Inline styling only — bold, italic, `code` — for ONE line at a time.
+    @ViewBuilder
+    private func blockView(_ block: PlanMarkdown.Block) -> some View {
+        switch block {
+        case let .heading(text):
+            Text(Self.rendered(text))
+                .font(.system(size: 13, weight: .semibold))
+                .padding(.top, 6)
+        case let .paragraph(text):
+            Text(Self.rendered(text))
+                .font(.system(size: 12))
+                .fixedSize(horizontal: false, vertical: true)
+        case let .listItem(marker, text):
+            // The marker hangs in its own column, so a wrapped step's second line lines up with
+            // its first instead of under the number.
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(marker)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Color.vibeBlue)
+                Text(Self.rendered(text))
+                    .font(.system(size: 12))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        case .spacer:
+            Spacer(minLength: 5)
+        }
+    }
+
+    private func optionButton(at index: Int) -> some View {
+        let number = index + 1
+        let option = Self.options[index]
+        return Button { onSelect(number) } label: {
+            HStack(alignment: .top, spacing: 10) {
+                Text("⌘\(number)")
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundStyle(Color.vibeBlue)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(option.label)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.white)
+                    Text(option.description)
+                        .font(.system(size: 10))
+                        .foregroundStyle(Color.vibeGray)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.vibePanel, in: RoundedRectangle(cornerRadius: 9))
+            .contentShape(RoundedRectangle(cornerRadius: 9))
+        }
+        .buttonStyle(.plain)
+        .keyboardShortcut(KeyEquivalent(Character(String(number))), modifiers: .command)
+        .accessibilityLabel("Option \(number): \(option.label)")
+        .firstMouseAction { onSelect(number) }
+    }
+
+    /// Inline styling only — bold, italic, `code` — for ONE block at a time.
     ///
     /// `.full` is what produced the blob: it parses blocks correctly but stores them as
     /// presentation intents, and a single SwiftUI `Text` ignores those entirely, so every heading
@@ -290,32 +358,94 @@ struct PlanReviewCard: View {
     }
 }
 
-/// Splits plan markdown into renderable lines. Pure and separate from the view so the part that
-/// can actually be wrong — what counts as a heading — is testable without a running SwiftUI stack.
+/// Splits plan markdown into renderable BLOCKS. Pure and separate from the view so the part that
+/// can actually be wrong is testable without a running SwiftUI stack.
+///
+/// Rendering one `Text` per source line (the first cut at #62) fixed the run-on blob but left the
+/// author's hard wrapping frozen into the card: a sentence wrapped at 80 columns in the terminal
+/// broke in the same place at half the width, mid-clause, with a ragged edge nobody wrote. A
+/// paragraph is consecutive non-blank lines, so joining them back and letting SwiftUI wrap at the
+/// card's own width is what makes it read like prose (#66).
 enum PlanMarkdown {
-    struct Line: Equatable {
-        let body: String
-        let isHeading: Bool
+    enum Block: Equatable {
+        case heading(String)
+        case paragraph(String)
+        /// Kept apart from `paragraph` so a wrapped step never merges into its neighbour, and so
+        /// the marker can be hung in the margin instead of swimming inside the text.
+        case listItem(marker: String, text: String)
+        /// A run of blank lines — one gap, however many there were.
+        case spacer
     }
 
-    /// ATX headings (`## Plan`) lose their marker and render bold; everything else is passed
-    /// through untouched, blank lines included — they are the paragraph spacing.
-    ///
-    /// A bare `#` with no text after it is NOT a heading: in a plan it is far more likely to be a
-    /// shell comment or a Python line inside a fenced block than a title.
-    static func lines(_ markdown: String) -> [Line] {
-        markdown.components(separatedBy: .newlines).map { raw in
-            let trimmed = raw.trimmingCharacters(in: .whitespaces)
-            let hashes = trimmed.prefix { $0 == "#" }
-            let rest = trimmed.dropFirst(hashes.count)
-            guard !hashes.isEmpty, hashes.count <= 6, rest.first == " " else {
-                return Line(body: raw, isHeading: false)
+    static func blocks(_ markdown: String) -> [Block] {
+        var blocks: [Block] = []
+        var paragraph: [String] = []
+        var listItem: (marker: String, text: [String])?
+
+        func flush() {
+            if let open = listItem {
+                blocks.append(.listItem(marker: open.marker, text: open.text.joined(separator: " ")))
+                listItem = nil
             }
-            return Line(
-                body: String(rest).trimmingCharacters(in: .whitespaces),
-                isHeading: true
-            )
+            if !paragraph.isEmpty {
+                blocks.append(.paragraph(paragraph.joined(separator: " ")))
+                paragraph = []
+            }
         }
+
+        for raw in markdown.components(separatedBy: .newlines) {
+            let trimmed = raw.trimmingCharacters(in: .whitespaces)
+
+            if trimmed.isEmpty {
+                flush()
+                if blocks.last != .spacer, !blocks.isEmpty { blocks.append(.spacer) }
+                continue
+            }
+            if let heading = heading(in: trimmed) {
+                flush()
+                blocks.append(.heading(heading))
+                continue
+            }
+            if let (marker, text) = listMarker(in: trimmed) {
+                flush()
+                listItem = (marker, [text])
+                continue
+            }
+            // A continuation line belongs to whichever block is still open, so a wrapped step
+            // stays part of that step rather than becoming a stray paragraph under it.
+            if listItem != nil {
+                listItem?.text.append(trimmed)
+            } else {
+                paragraph.append(trimmed)
+            }
+        }
+        flush()
+        // A trailing gap would just pad the bottom of the scroll view.
+        if blocks.last == .spacer { blocks.removeLast() }
+        return blocks
+    }
+
+    /// ATX headings only. A `#` with no text after it is NOT one — in a plan that is far more
+    /// likely to be a shell comment or a Python line than a title — and neither is more than six.
+    private static func heading(in trimmed: String) -> String? {
+        let hashes = trimmed.prefix { $0 == "#" }
+        let rest = trimmed.dropFirst(hashes.count)
+        guard !hashes.isEmpty, hashes.count <= 6, rest.first == " " else { return nil }
+        return String(rest).trimmingCharacters(in: .whitespaces)
+    }
+
+    /// `1.` / `2)` / `-` / `*` / `+`, each followed by a space. The marker is returned separately
+    /// so the view can align it, and so "3." never gets re-flowed into the previous sentence.
+    private static func listMarker(in trimmed: String) -> (String, String)? {
+        if let first = trimmed.first, "-*+".contains(first), trimmed.dropFirst().first == " " {
+            return (String(first), String(trimmed.dropFirst(2)))
+        }
+        let digits = trimmed.prefix { $0.isNumber }
+        guard !digits.isEmpty, digits.count <= 3 else { return nil }
+        let afterDigits = trimmed.dropFirst(digits.count)
+        guard let punctuation = afterDigits.first, punctuation == "." || punctuation == ")",
+              afterDigits.dropFirst().first == " " else { return nil }
+        return (String(digits) + String(punctuation), String(afterDigits.dropFirst(2)))
     }
 }
 
