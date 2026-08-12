@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="620" height="300" viewBox="0 0 620 300" role="img">
+<rect x="0" y="0" width="620" height="300" rx="22" fill="#0B0B0B" opacity="1.0"/>
+<rect x="20" y="16" width="580" height="268" rx="16" fill="#1C1C1E" opacity="1.0"/>
+<circle cx="42" cy="44" r="3.5" fill="#F59E0B"/>
+<text x="56" y="48" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Text', Helvetica, Arial, sans-serif" font-size="11" font-weight="500" fill="#8E8E93" text-anchor="start" opacity="1.0">Permission Request</text>
+<text x="38" y="78" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Text', Helvetica, Arial, sans-serif" font-size="13" font-weight="400" fill="#F59E0B" text-anchor="start" opacity="1.0">⚠︎</text>
+<text x="60" y="78" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Text', Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#F59E0B" text-anchor="start" opacity="1.0">Write</text>
+<text x="108" y="78" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" font-weight="400" fill="#FFFFFF" text-anchor="start" opacity="1.0">approve-deny/proof.txt</text>
+<rect x="38" y="92" width="544" height="44" rx="9" fill="#151515" opacity="1.0"/>
+<rect x="46" y="100" width="528" height="20" rx="4" fill="#173D25" opacity="1.0"/>
+<text x="54" y="114" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" font-weight="400" fill="#4ADE80" text-anchor="start" opacity="1.0">+approved</text>
+<text x="54" y="132" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" font-weight="400" fill="#8E8E93" text-anchor="start" opacity="1.0">+1 −0</text>
+<rect x="38" y="148" width="544" height="42" rx="9" fill="#151515" opacity="1.0"/>
+<text x="50" y="167" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" font-weight="500" fill="#F59E0B" text-anchor="start" opacity="1.0">⌘1</text>
+<text x="84" y="166" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Text', Helvetica, Arial, sans-serif" font-size="12" font-weight="500" fill="#FFFFFF" text-anchor="start" opacity="1.0">Yes</text>
+<text x="84" y="181" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Text', Helvetica, Arial, sans-serif" font-size="10" font-weight="400" fill="#8E8E93" text-anchor="start" opacity="1.0">Just this once</text>
+<rect x="38" y="196" width="544" height="42" rx="9" fill="#151515" opacity="1.0"/>
+<text x="50" y="215" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" font-weight="500" fill="#F59E0B" text-anchor="start" opacity="1.0">⌘2</text>
+<text x="84" y="214" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Text', Helvetica, Arial, sans-serif" font-size="12" font-weight="500" fill="#FFFFFF" text-anchor="start" opacity="1.0">Yes, allow all edits this session</text>
+<text x="84" y="229" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Text', Helvetica, Arial, sans-serif" font-size="10" font-weight="400" fill="#8E8E93" text-anchor="start" opacity="1.0">Stops this card coming back</text>
+<rect x="38" y="244" width="544" height="32" rx="16" fill="#151515" opacity="1.0"/>
+<text x="310.0" y="265" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Text', Helvetica, Arial, sans-serif" font-size="12" font-weight="500" fill="#FFFFFF" text-anchor="middle" opacity="1.0">Deny ⌘N</text>
+</svg>

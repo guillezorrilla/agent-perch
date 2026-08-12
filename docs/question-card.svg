@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="620" height="286" viewBox="0 0 620 286" role="img">
+<rect x="0" y="0" width="620" height="286" rx="22" fill="#0B0B0B" opacity="1.0"/>
+<rect x="20" y="16" width="580" height="254" rx="16" fill="#1C1C1E" opacity="1.0"/>
+<circle cx="42" cy="44" r="3.5" fill="#60A5FA"/>
+<text x="56" y="48" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Text', Helvetica, Arial, sans-serif" font-size="11" font-weight="500" fill="#8E8E93" text-anchor="start" opacity="1.0">Claude asks</text>
+<text x="38" y="76" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Text', Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#FFFFFF" text-anchor="start" opacity="1.0">Which fruit should I use?</text>
+<rect x="38" y="92" width="544" height="42" rx="9" fill="#151515" opacity="1.0"/>
+<text x="50" y="111" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" font-weight="500" fill="#60A5FA" text-anchor="start" opacity="1.0">⌘1</text>
+<text x="84" y="110" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Text', Helvetica, Arial, sans-serif" font-size="12" font-weight="500" fill="#FFFFFF" text-anchor="start" opacity="1.0">Apple</text>
+<text x="84" y="125" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Text', Helvetica, Arial, sans-serif" font-size="10" font-weight="400" fill="#8E8E93" text-anchor="start" opacity="1.0">The safe default</text>
+<rect x="38" y="140" width="544" height="42" rx="9" fill="#151515" opacity="1.0"/>
+<text x="50" y="159" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" font-weight="500" fill="#60A5FA" text-anchor="start" opacity="1.0">⌘2</text>
+<text x="84" y="158" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Text', Helvetica, Arial, sans-serif" font-size="12" font-weight="500" fill="#FFFFFF" text-anchor="start" opacity="1.0">Banana</text>
+<text x="84" y="173" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Text', Helvetica, Arial, sans-serif" font-size="10" font-weight="400" fill="#8E8E93" text-anchor="start" opacity="1.0">Sweeter, ships sooner</text>
+<rect x="38" y="188" width="544" height="42" rx="9" fill="#151515" opacity="1.0"/>
+<text x="50" y="207" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" font-weight="500" fill="#60A5FA" text-anchor="start" opacity="1.0">⌘3</text>
+<text x="84" y="206" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Text', Helvetica, Arial, sans-serif" font-size="12" font-weight="500" fill="#FFFFFF" text-anchor="start" opacity="1.0">Cherry</text>
+<text x="84" y="221" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Text', Helvetica, Arial, sans-serif" font-size="10" font-weight="400" fill="#8E8E93" text-anchor="start" opacity="1.0">Small and fast</text>
+<rect x="38" y="236" width="544" height="42" rx="9" fill="#151515" opacity="1.0"/>
+<text x="50" y="255" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" font-weight="500" fill="#60A5FA" text-anchor="start" opacity="1.0">⌘4</text>
+<text x="84" y="254" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Text', Helvetica, Arial, sans-serif" font-size="12" font-weight="500" fill="#FFFFFF" text-anchor="start" opacity="1.0">Date</text>
+<text x="84" y="269" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Text', Helvetica, Arial, sans-serif" font-size="10" font-weight="400" fill="#8E8E93" text-anchor="start" opacity="1.0">Dense, chewy, divisive</text>
+</svg>

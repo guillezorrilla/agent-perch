@@ -8,7 +8,7 @@
 
 *Native Swift. No dock icon. No menu bar clutter. No account, no telemetry, no cost.*
 
-<img src="docs/hero.png" alt="VibeNotch panel showing several live agent sessions" width="720">
+<img src="docs/hero.svg" alt="The VibeNotch panel: a usage strip, two live session cards and two compact rows" width="740">
 
 </div>
 
@@ -28,25 +28,23 @@ VibeNotch puts all of them in the notch. Hover to see them. Answer from there.
 
 ### See every agent at a glance
 
-<img src="docs/panel.png" alt="Session cards with status, elapsed time and token counts" width="640">
-
 Live status, the current action, elapsed time and tokens for the turn. Agent and terminal pills tell you what's running where. Quota for every provider you use sits along the top.
 
 ### Answer without switching apps
 
-<img src="docs/permission-card.png" alt="Permission card showing the tool and a diff of the change" width="640">
+<img src="docs/permission-card.svg" alt="Permission card naming the tool, the file and a diff of the change" width="600">
 
 When an agent stops to ask, the card shows **what** it's asking — the tool, the file, a diff of the change — not just that it's asking. Hit <kbd>⌘1</kbd> to allow, <kbd>⌘2</kbd> to allow for the rest of the session, <kbd>⌘N</kbd> to deny. The keystroke goes into the right terminal tab, even if you're in a browser.
 
 ### Pick an option from a question
 
-<img src="docs/question-card.png" alt="Question card with numbered options" width="640">
+<img src="docs/question-card.svg" alt="Question card with four numbered options" width="600">
 
 `AskUserQuestion` prompts render as real numbered choices. <kbd>⌘1</kbd>–<kbd>⌘9</kbd> answers them.
 
 ### Review a plan
 
-<img src="docs/plan-card.png" alt="Plan review card with formatted markdown" width="640">
+<img src="docs/plan-card.svg" alt="Plan review card with formatted markdown and three choices" width="600">
 
 Plan mode gets a proper markdown card, and all three of the real choices — including "use auto mode", which is what <kbd>⌘1</kbd> actually does. No button that quietly means something bigger than it says.
 
