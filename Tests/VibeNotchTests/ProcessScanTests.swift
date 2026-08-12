@@ -616,21 +616,25 @@ final class GhostSessionTests: XCTestCase {
         XCTAssertTrue(store.sessions.isEmpty)
     }
 
-    /// #10's intent, kept: a session that finished moments ago is shown on purpose, so it can be
-    /// jumped back to or resumed. Only its transcript hour is what gets cut short.
+    /// #10's five-minute grace for a just-finished session is GONE (#64). It put seven rows in a
+    /// panel with three live sessions behind it, and what it protected was worth little: jumping
+    /// to a dead Claude row only opens a fresh shell at its cwd, it does not resume the session.
+    /// Sustained absence is now the whole test, however recently the session was writing.
     @MainActor
-    func testAJustFinishedSessionIsKeptForItsGraceBeforeAgeingOut() {
+    func testAJustFinishedSessionGoesAsSoonAsItsAbsenceIsSustained() {
         let store = makeStore(
             discovered: [discovered("session-1", cwd: "/repo", lastActivity: t0)],
             processes: ProcessTable()
         )
 
         store.refresh(now: t0)
-        store.refresh(now: t0.addingTimeInterval(4 * 60.0))
-        XCTAssertEqual(store.sessions.count, 1, "absent for minutes, but only just finished")
+        XCTAssertEqual(store.sessions.count, 1, "one empty process listing proves nothing")
 
-        store.refresh(now: t0.addingTimeInterval(5 * 60.0 + 1))
-        XCTAssertTrue(store.sessions.isEmpty)
+        store.refresh(now: t0.addingTimeInterval(29))
+        XCTAssertEqual(store.sessions.count, 1, "still inside the absence grace")
+
+        store.refresh(now: t0.addingTimeInterval(31))
+        XCTAssertTrue(store.sessions.isEmpty, "finished seconds ago, but nothing is running it")
     }
 
     /// The false positive that would be far worse than the bug. `pgrep`/`lsof` can miss a process

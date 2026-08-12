@@ -247,7 +247,9 @@ final class IdleNotificationStoreTests: XCTestCase {
             openCodeDatabaseURL: temporaryDirectory().appendingPathComponent("opencode.db"),
             kiroHome: temporaryDirectory(),
             cursorHome: temporaryDirectory(),
-            processProvider: { [] }
+            // A live process for the session these tests drive: without one, sustained absence
+            // retires the row and every assertion below becomes vacuously true.
+            processProvider: { [ClaudeProcess(pid: 1, command: "claude", cwd: "/tmp/repo", tty: "ttys001")] }
         )
     }
 

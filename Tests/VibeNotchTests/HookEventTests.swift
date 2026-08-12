@@ -230,7 +230,10 @@ final class SessionTransitionTests: XCTestCase {
             openCodeDatabaseURL: temporaryDirectory().appendingPathComponent("opencode.db"),
             kiroHome: temporaryDirectory(),
             cursorHome: temporaryDirectory(),
-            processProvider: { [] }
+            // A live process at this session's cwd: without one, sustained absence now
+            // (correctly) reports the row as finished, which is a different assertion
+            // than the mtime-vs-hook precedence this test exists for.
+            processProvider: { [ClaudeProcess(pid: 1, command: "claude", cwd: "/tmp/repo", tty: "ttys001")] }
         )
 
         try send(to: store,
