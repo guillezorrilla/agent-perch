@@ -166,20 +166,72 @@ def option_row(x, y, w, n, label, desc, accent=BLUE):
 
 # --- images ---------------------------------------------------------------
 
+def menu_bar_glyphs(x, y, w):
+    """Enough of a macOS menu bar to place the panel, without pretending to be a screenshot."""
+    out = []
+    out.append(f'<circle cx="{x + 14}" cy="{y + 12}" r="5" fill="#C9C9CE" opacity="0.85"/>')
+    out.append(f'<rect x="{x + 12}" y="{y + 3}" width="4" height="5" rx="2" fill="#0B0B12"/>')
+    out.append(text(x + 30, y + 16, "Finder", size=11, fill="#D8D8DD", weight="600"))
+    out.append(text(x + 78, y + 16, "File", size=11, fill="#B8B8BE"))
+    out.append(text(x + 110, y + 16, "Edit", size=11, fill="#B8B8BE"))
+    out.append(text(x + 144, y + 16, "View", size=11, fill="#B8B8BE"))
+    rx = x + w
+    out.append(text(rx - 14, y + 16, "9:41", size=11, fill="#D8D8DD", anchor="end"))
+    out.append(f'<rect x="{rx - 70}" y="{y + 6}" width="18" height="10" rx="3" '
+               f'fill="none" stroke="#B8B8BE" stroke-width="1.2" opacity="0.9"/>')
+    out.append(f'<rect x="{rx - 68}" y="{y + 8}" width="11" height="6" rx="1.5" fill="#B8B8BE"/>')
+    for i, r in enumerate([3.5, 6.5, 9.5]):
+        out.append(f'<path d="M {rx - 100} {y + 17} a {r} {r} 0 0 1 {r * 2} 0" fill="none" '
+                   f'stroke="#B8B8BE" stroke-width="1.3" opacity="{0.45 + i * 0.2}"/>')
+    return "\n".join(out)
+
+
 def hero():
-    w, h = 760, 404
-    b = [rect(0, 0, w, 34, NOTCH), rect(w / 2 - 90, 0, 180, 26, NOTCH, r=0)]
-    b.append(usage_strip(28, 52, w - 56))
-    y = 108
-    b.append(full_card(24, y, w - 48, "vibe-notch", "You: fix the hover flake",
-                       "Running swift test", "dot", "<1m",
-                       meta="2m 31s · 154.0k tokens", glyph_color=GREEN, frame=STEP))
-    b.append(full_card(24, y + 104, w - 48, "create-agentforce", "You: wire up the webhook",
-                       "Needs input — click to jump", AMBER, "3m",
+    """The panel where it actually lives: hanging from the notch of a MacBook display."""
+    w, h = 1060, 496
+    bezel = 11
+    sw, sh = w - bezel * 2, h - bezel * 2
+    menu_h = 26
+    panel_w = 700
+    panel_x = (w - panel_w) / 2
+    panel_h = 396
+
+    b = []
+    b.append('<defs><linearGradient id="wall" x1="0" y1="0" x2="0.65" y2="1">'
+             '<stop offset="0%" stop-color="#2E2748"/>'
+             '<stop offset="50%" stop-color="#1B1932"/>'
+             '<stop offset="100%" stop-color="#0D0C16"/></linearGradient>'
+             f'<clipPath id="screen"><rect x="{bezel}" y="{bezel}" width="{sw}" height="{sh}" rx="16"/></clipPath>'
+             '</defs>')
+    # The lid: bezel, then the display.
+    b.append(rect(0, 0, w, h, "#08080A", r=26))
+    b.append(rect(bezel, bezel, sw, sh, "url(#wall)", r=16))
+    b.append('<g clip-path="url(#screen)">')
+    b.append(rect(bezel, bezel, sw, menu_h, "#000000", opacity=0.45))
+    b.append(menu_bar_glyphs(bezel + 12, bezel + 4, sw - 24))
+    # The panel: flush with the top edge and square there, because it grows out of the notch;
+    # rounded only at the bottom. That is how DynamicNotchKit draws it.
+    b.append(f'<path d="M {panel_x} {bezel} h {panel_w} v {panel_h - 24} '
+             f'a 24 24 0 0 1 -24 24 h {-(panel_w - 48)} a 24 24 0 0 1 -24 -24 Z" fill="#0A0A0A"/>')
+    b.append('</g>')
+    # A hairline so the panel reads as an object against a dark wallpaper.
+    b.append(f'<path d="M {panel_x} {bezel} v {panel_h - 24} a 24 24 0 0 0 24 24 h {panel_w - 48} '
+             f'a 24 24 0 0 0 24 -24 v {-(panel_h - 24)}" fill="none" '
+             f'stroke="#2A2A2E" stroke-width="1" opacity="0.7"/>')
+
+    inner_x = panel_x + 24
+    inner_w = panel_w - 48
+    b.append(usage_strip(inner_x, bezel + 42, inner_w))
+    y = bezel + 98
+    b.append(full_card(inner_x, y, inner_w, "api-gateway", "You: add retries to the client",
+                       "Running the test suite", "dot", "<1m",
+                       meta="2m 31s \u00b7 154.0k tokens", glyph_color=GREEN, frame=STEP))
+    b.append(full_card(inner_x, y + 104, inner_w, "checkout-flow", "You: wire up the webhook",
+                       "Needs input \u2014 click to jump", AMBER, "3m",
                        glyph_color=AMBER, frame=REST, h=76))
-    b.append(compact_row(24, y + 192, w - 48, "ciento-app", "12m"))
-    b.append(compact_row(24, y + 236, w - 48, "docs-site", "41m"))
-    return svg(w, h, "\n".join(b))
+    b.append(compact_row(inner_x, y + 192, inner_w, "web-dashboard", "12m"))
+    b.append(compact_row(inner_x, y + 236, inner_w, "docs-site", "41m"))
+    return svg(w, h, "\n".join(b), bg="#000000", radius=26)
 
 
 def permission_card():
@@ -189,7 +241,7 @@ def permission_card():
     b.append(text(56, 48, "Permission Request", size=11, fill=GRAY, weight="500"))
     b.append(text(38, 78, "⚠︎", size=13, fill=AMBER))
     b.append(text(60, 78, "Write", size=13, fill=AMBER, weight="600"))
-    b.append(text(108, 78, "approve-deny/proof.txt", size=12, fill=WHITE, font=MONO))
+    b.append(text(108, 78, "src/config/version.txt", size=12, fill=WHITE, font=MONO))
     b.append(rect(38, 92, w - 76, 44, PANEL, r=9))
     b.append(rect(46, 100, w - 92, 20, "#173D25", r=4))
     b.append(text(54, 114, "+approved", size=11, fill=GREEN, font=MONO))
