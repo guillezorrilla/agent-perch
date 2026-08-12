@@ -48,6 +48,20 @@ evidence makes this true, and what happens when that evidence is missing?*
 - **Comments explain why, not what.** The existing ones reference issue numbers
   so a future reader can find the failure that motivated the code. Keep that up.
 
+## Labels
+
+Issues carry an `area:` label matching where the work lives — `jump`, `answer`,
+`cards`, `discovery`, `hooks`, `usage`, `notch`, `packaging`. Pick the one you
+would grep for.
+
+Three others carry real meaning rather than decoration:
+
+- **`regression`** — worked before, a change broke it. This project has re-broken
+  the same areas more than once, so these get priority over new work.
+- **`needs-decision`** — blocked on a product or design call, not on code. Do not
+  start building one of these without settling the question in the issue first.
+- **`needs-info`** — waiting on a repro, a log or a screenshot.
+
 ## Debugging
 
 Prefer measurement to theory. The app logs to the `dev.vibenotch` subsystem:
