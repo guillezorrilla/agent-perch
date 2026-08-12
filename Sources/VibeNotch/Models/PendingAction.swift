@@ -99,13 +99,30 @@ enum PendingAction: Equatable, Sendable {
               case let .permission(tool) = NotificationKind.classify(notificationMessage) else {
             return nil
         }
-        if let tool,
-           case let .some(.permission(request)) = recorded,
-           request.toolName.lowercased() == tool.lowercased() {
-            return recorded
+        if case let .some(.permission(request)) = recorded {
+            if let tool {
+                // The message named a tool, so it has to agree with the recorded call. It is the
+                // disagreement that is dangerous: showing tool B's diff under tool A's name is how
+                // a user approves something they were never shown.
+                if request.toolName.lowercased() == tool.lowercased() { return recorded }
+            } else {
+                // The message named no tool — "Claude needs your permission" is the wording for a
+                // Write, with nothing after "to use " to parse. The recorded call is still the last
+                // tool this turn to reach `PreToolUse`, cleared on every prompt and every `Stop`,
+                // so it is the tool being asked about in all but a contrived case. This used to
+                // fall through to the generic card below, which told the user nothing: they were
+                // pressing ⌘Y on "Claude needs your permission" with no idea what they were
+                // approving.
+                //
+                // The contrived case: a tool OUTSIDE the hook's matcher (WebFetch, an MCP tool)
+                // blocks with an equally nameless message, leaving the previous matched call
+                // recorded. Not observed — those messages do name their tool, which lands in the
+                // branch above and is caught by the mismatch check.
+                return recorded
+            }
         }
-        // The recorded call belongs to some other tool (or the message named none, or nothing was
-        // recorded at all): show the request, but never someone else's diff or command.
+        // Nothing recorded to attribute this to, or a recorded call that provably belongs to a
+        // different tool: show the request, but never someone else's diff or command.
         return .permission(PermissionRequest(
             toolName: tool ?? "",
             target: "",
