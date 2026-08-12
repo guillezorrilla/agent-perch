@@ -422,14 +422,7 @@ struct UsageStripView: View {
     }
 
     private func glyph(for provider: String) -> String {
-        switch provider {
-        case "Claude": "✦"
-        case "Codex": "◆"
-        case "Antigravity": "▲"
-        case "Gemini": "✧"
-        case "Kiro": "◈"
-        default: "●"
-        }
+        AgentRegistry.glyph(for: provider)
     }
 
     private func color(for level: UsageLevel) -> Color {

@@ -86,15 +86,13 @@ struct TTYResolver {
 
     /// Dispatches to the right agent's CLI check by name, defaulting to Claude's rules — the
     /// same default every call site already assumed before Codex existed.
+    ///
+    /// The dispatch table moved onto `AgentRegistry`'s rows. Missing an arm here used to fall
+    /// through that default silently, degrading `JumpTarget.resolve`'s cwd fallback and
+    /// `SessionRetirement.liveness` with no compiler error and no symptom until a jump landed
+    /// somewhere wrong.
     static func isAgentCLI(_ agentName: String, command: String) -> Bool {
-        switch agentName {
-        case "Codex": return isCodexCLI(command: command)
-        case "Antigravity": return isAntigravityCLI(command: command)
-        case "Gemini": return isGeminiCLI(command: command)
-        case "OpenCode": return isOpenCodeCLI(command: command)
-        case "Kiro": return isKiroCLI(command: command)
-        default: return isClaudeCLI(command: command)
-        }
+        AgentRegistry.isCLI(agentName: agentName, command: command)
     }
 
     static func isClaudeCLI(command: String) -> Bool {
