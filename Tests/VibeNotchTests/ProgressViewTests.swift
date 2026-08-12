@@ -603,56 +603,77 @@ final class ProgressViewTests: XCTestCase {
     }
 }
 
-/// The plan card rendered every heading and list item into one run-on paragraph (#62): `.full`
-/// markdown parsing stores block structure as presentation intents and SwiftUI's `Text` drops
-/// them. These cover the split that replaced it.
+/// The plan card's markdown, twice burned. #62: `.full` parsing stored block structure as
+/// presentation intents that SwiftUI's `Text` drops, so every block ran together. #66: one `Text`
+/// per source line fixed that but froze the author's 80-column hard wrapping into a half-width
+/// card, breaking sentences mid-clause. Blocks, with paragraphs re-flowed, is the answer to both.
 final class PlanMarkdownTests: XCTestCase {
-    func testHeadingsLoseTheirMarkerAndAreFlagged() {
-        XCTAssertEqual(
-            PlanMarkdown.lines("## Plan"),
-            [PlanMarkdown.Line(body: "Plan", isHeading: true)]
-        )
-        XCTAssertEqual(
-            PlanMarkdown.lines("###### Deep"),
-            [PlanMarkdown.Line(body: "Deep", isHeading: true)]
-        )
+    func testHeadingsLoseTheirMarker() {
+        XCTAssertEqual(PlanMarkdown.blocks("## Plan"), [.heading("Plan")])
+        XCTAssertEqual(PlanMarkdown.blocks("###### Deep"), [.heading("Deep")])
     }
 
-    /// The reported blob: three blocks that used to concatenate into "CLIContextHypothetical".
-    func testEachBlockStaysOnItsOwnLine() {
-        let lines = PlanMarkdown.lines("Add --version to a CLI\n## Context\nHypothetical: a tool")
-        XCTAssertEqual(lines, [
-            PlanMarkdown.Line(body: "Add --version to a CLI", isHeading: false),
-            PlanMarkdown.Line(body: "Context", isHeading: true),
-            PlanMarkdown.Line(body: "Hypothetical: a tool", isHeading: false)
-        ])
-    }
-
-    func testBlankLinesSurviveAsParagraphSpacing() {
-        XCTAssertEqual(PlanMarkdown.lines("a\n\nb").count, 3)
-        XCTAssertEqual(PlanMarkdown.lines("a\n\nb")[1], PlanMarkdown.Line(body: "", isHeading: false))
-    }
-
-    /// A shell comment or a `#!` line inside a plan is not a title.
-    func testAHashWithoutTextIsNotAHeading() {
+    /// The #66 report: a paragraph the terminal wrapped at 80 columns must re-flow, not keep a
+    /// break the card is far too narrow to justify.
+    func testAWrappedParagraphIsJoinedBackIntoOne() {
         XCTAssertEqual(
-            PlanMarkdown.lines("#!/bin/sh"),
-            [PlanMarkdown.Line(body: "#!/bin/sh", isHeading: false)]
-        )
-        XCTAssertEqual(PlanMarkdown.lines("#"), [PlanMarkdown.Line(body: "#", isHeading: false)])
-        XCTAssertEqual(
-            PlanMarkdown.lines("####### too deep"),
-            [PlanMarkdown.Line(body: "####### too deep", isHeading: false)]
+            PlanMarkdown.blocks("The tool has no way to report which version is installed, so bug\nreports cannot be tied to a build."),
+            [.paragraph("The tool has no way to report which version is installed, so bug reports cannot be tied to a build.")]
         )
     }
 
-    func testListItemsArePassedThroughUntouched() {
+    /// The #62 blob: three blocks that used to concatenate into "CLIContextHypothetical".
+    func testHeadingsSeparateTheParagraphsAroundThem() {
         XCTAssertEqual(
-            PlanMarkdown.lines("1. Define __version__\n- bullet"),
+            PlanMarkdown.blocks("Add --version to a CLI\n## Context\nHypothetical: a tool"),
+            [.paragraph("Add --version to a CLI"), .heading("Context"), .paragraph("Hypothetical: a tool")]
+        )
+    }
+
+    func testNumberedAndBulletedItemsKeepTheirMarkerSeparately() {
+        XCTAssertEqual(
+            PlanMarkdown.blocks("1. Keep the version in one place\n2) Add the argument\n- a bullet\n* another"),
             [
-                PlanMarkdown.Line(body: "1. Define __version__", isHeading: false),
-                PlanMarkdown.Line(body: "- bullet", isHeading: false)
+                .listItem(marker: "1.", text: "Keep the version in one place"),
+                .listItem(marker: "2)", text: "Add the argument"),
+                .listItem(marker: "-", text: "a bullet"),
+                .listItem(marker: "*", text: "another")
             ]
         )
+    }
+
+    /// A wrapped step stays part of that step — it must not become a stray paragraph beneath it,
+    /// nor get swallowed into the following one.
+    func testAWrappedListItemStaysWithItsOwnStep() {
+        XCTAssertEqual(
+            PlanMarkdown.blocks("1. In the existing parser setup, add\n   the version argument\n2. Add a check"),
+            [
+                .listItem(marker: "1.", text: "In the existing parser setup, add the version argument"),
+                .listItem(marker: "2.", text: "Add a check")
+            ]
+        )
+    }
+
+    func testRunsOfBlankLinesCollapseToOneGapAndNeverTrail() {
+        XCTAssertEqual(
+            PlanMarkdown.blocks("a\n\n\nb\n\n"),
+            [.paragraph("a"), .spacer, .paragraph("b")]
+        )
+    }
+
+    /// A shell comment or a decimal inside a plan is not structure.
+    func testNonStructureIsLeftAlone() {
+        XCTAssertEqual(PlanMarkdown.blocks("#!/bin/sh"), [.paragraph("#!/bin/sh")])
+        XCTAssertEqual(PlanMarkdown.blocks("#"), [.paragraph("#")])
+        XCTAssertEqual(PlanMarkdown.blocks("####### too deep"), [.paragraph("####### too deep")])
+        XCTAssertEqual(PlanMarkdown.blocks("3.14 is pi"), [.paragraph("3.14 is pi")])
+    }
+
+    /// The card types these digits into Claude Code's own plan prompt, so the order is a contract.
+    func testTheCardOffersThePlanPromptsThreeRealChoices() {
+        XCTAssertEqual(PlanReviewCard.options.count, 3)
+        XCTAssertEqual(PlanReviewCard.options[0].label, "Yes, and use auto mode")
+        XCTAssertEqual(PlanReviewCard.options[1].label, "Yes, manually approve edits")
+        XCTAssertEqual(PlanReviewCard.options[2].label, "Tell Claude what to change")
     }
 }
