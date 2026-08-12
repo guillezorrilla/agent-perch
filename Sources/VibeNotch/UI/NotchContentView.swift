@@ -142,8 +142,8 @@ struct NotchContentView: View {
                 respond(decision, to: session)
             }
         case let .plan(markdown):
-            PlanReviewCard(markdown: markdown) { decision in
-                respond(decision, to: session)
+            PlanReviewCard(markdown: markdown) { option in
+                respond(option: option, in: session, label: PlanReviewCard.options[option - 1].label)
             }
         case let .question(prompt):
             QuestionPromptCard(prompt: prompt) { option in
@@ -163,6 +163,14 @@ struct NotchContentView: View {
             respond(number, to: prompt, in: session)
         case (.question, _):
             // A question has numbered answers only — allow/deny would be a guess.
+            return
+        case let (.plan, .option(number)):
+            guard PlanReviewCard.options.indices.contains(number - 1) else { return }
+            respond(option: number, in: session, label: PlanReviewCard.options[number - 1].label)
+        case (.plan, _):
+            // ⌘Y used to type a `1` here, and `1` on the plan prompt is AUTO MODE — the one
+            // choice a user pressing "Approve" is least likely to have meant (#66). The plan
+            // card names its three real options; nothing else answers it.
             return
         case (_, .allow):
             respond(.allow, to: session)
@@ -195,10 +203,10 @@ struct NotchContentView: View {
         )
     }
 
-    private func respond(option: Int, in session: AgentSession) {
+    private func respond(option: Int, in session: AgentSession, label: String? = nil) {
         answer(
             in: session,
-            label: "Option \(option) ✓",
+            label: "\(label ?? "Option \(option)") ✓",
             inject: { await actionInjector.inject(String(option), into: session) }
         )
     }
