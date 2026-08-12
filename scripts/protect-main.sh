@@ -18,15 +18,17 @@ read -r -d '' RULES <<'JSON' || true
   "target": "branch",
   "enforcement": "active",
   "conditions": { "ref_name": { "include": ["~DEFAULT_BRANCH"], "exclude": [] } },
-  "bypass_actors": [],
+  "bypass_actors": [
+    { "actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always" }
+  ],
   "rules": [
     { "type": "deletion" },
     { "type": "non_fast_forward" },
     {
       "type": "pull_request",
       "parameters": {
-        "required_approving_review_count": 0,
-        "dismiss_stale_reviews_on_push": false,
+        "required_approving_review_count": 1,
+        "dismiss_stale_reviews_on_push": true,
         "require_code_owner_review": false,
         "require_last_push_approval": false,
         "required_review_thread_resolution": false,
@@ -50,9 +52,13 @@ fi
 print "Done. main now requires a pull request; force-pushes and deletion are blocked."
 print ""
 print "Notes:"
-print "  • 0 required approvals on purpose — GitHub will not let you approve your"
-print "    own PR, so requiring 1 would lock a solo maintainer out of their own repo."
-print "  • bypass_actors is empty on purpose. Leave an admin bypass in and you will"
-print "    push straight to main anyway, and the rule becomes decorative."
+print "  • 1 approval required, with repository-admin bypass. Anyone else's PR needs"
+print "    your review; your own do not, because GitHub will not let you approve your"
+print "    own PR and without the bypass you would be locked out of your own repo."
+print "  • While you are the only account with write access the approval rule is"
+print "    largely symbolic — outside contributors fork and cannot merge regardless."
+print "    It starts doing real work the moment a second collaborator is added."
+print "  • Stale reviews are dismissed on push, so an approval cannot survive a"
+print "    rewrite of the code it approved."
 print "  • Add a required status check once CI has run at least once on the default"
 print "    branch, otherwise the check name will not exist yet to select."
