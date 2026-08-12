@@ -274,3 +274,51 @@ final class HookTests: XCTestCase {
         (entry["hooks"] as? [[String: Any]])?.first?["command"] as? String
     }
 }
+
+/// The hook runs detached, so `ps -o tty= -p $$` prints "??" and every session arrived with no
+/// tty at all. Two live sessions in one folder then resolved to the SAME process and both cards
+/// jumped to one tab (#70). The script walks its parents until one has a terminal.
+final class HookScriptTTYWalkTests: XCTestCase {
+    private func runScript() throws -> [String: Any] {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        _ = try HookScript.materialize(in: directory)
+
+        let process = Process()
+        process.executableURL = HookScript.url(in: directory)
+        process.arguments = ["Stop"]
+        let input = Pipe()
+        process.standardInput = input
+        try process.run()
+        input.fileHandleForWriting.write(Data(#"{"session_id":"s"}"#.utf8))
+        input.fileHandleForWriting.closeFile()
+        process.waitUntilExit()
+
+        let events = directory.appendingPathComponent("events", isDirectory: true)
+        let files = try FileManager.default.contentsOfDirectory(at: events, includingPropertiesForKeys: nil)
+        let event = try XCTUnwrap(files.first { $0.pathExtension == "json" })
+        return try XCTUnwrap(
+            JSONSerialization.jsonObject(with: try Data(contentsOf: event)) as? [String: Any]
+        )
+    }
+
+    /// The regression: "??" must never reach the store as if it were a terminal. `swift test`
+    /// itself runs without a controlling terminal, so this exercises the walk for real.
+    func testTheHookNeverReportsTheQuestionMarkTTY() throws {
+        let event = try runScript()
+        let tty = try XCTUnwrap(event["tty"] as? String)
+        XCTAssertNotEqual(tty, "??", "\"??\" is the absence of a terminal, not one")
+        XCTAssertEqual(event["event"] as? String, "Stop")
+    }
+
+    /// An empty tty stays valid and stays honest: a walk that reaches pid 1 without finding a
+    /// terminal reports nothing, exactly as before, so this can only ever add information.
+    func testTheWalkIsBoundedAndStopsAtInit() {
+        let script = HookScript.content(applicationSupportDirectory: URL(fileURLWithPath: "/tmp/x"))
+        XCTAssertTrue(script.contains(#"[ "$hops" -lt 8 ]"#), "the walk must be bounded")
+        XCTAssertTrue(script.contains(#"[ "$pid" -le 1 ]"#), "the walk must stop at init")
+        XCTAssertTrue(script.contains(#"[ "$tty" = "??" ] && tty="""#), "\"??\" must be erased")
+    }
+}
