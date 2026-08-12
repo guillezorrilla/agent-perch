@@ -313,14 +313,14 @@ final class RuntimeUsageTokenSource: UsageTokenSource, @unchecked Sendable {
         // A read that queued behind another already has its answer.
         if let memoized = memoizedResult() { return memoized }
 
-        let result = resolve()
+        let (result, memoize) = resolve()
         lock.lock()
         switch result {
         case .token(let token):
             cachedToken = token
             declined = nil
         case .unreadable(let detail):
-            declined = detail
+            if memoize { declined = detail }
         case .notConfigured:
             // Cheap and non-interactive to re-check, so it is not memoized: signing into Claude
             // Code later brings the row back on its own.
@@ -330,29 +330,46 @@ final class RuntimeUsageTokenSource: UsageTokenSource, @unchecked Sendable {
         return result
     }
 
-    private func resolve() -> UsageTokenReadResult {
+    /// The read, plus whether its answer is worth REMEMBERING for the rest of the process.
+    ///
+    /// Only a refusal earns the memo. A refusal is about the user's decision, which will not change
+    /// on its own, and re-asking would raise the system dialog on every refresh — that is what
+    /// `declined` exists to stop. A `.failed` read is the opposite: it is about the machine's
+    /// circumstances at one instant, and it clears by itself.
+    ///
+    /// That distinction is not academic. The real failure was OSStatus -60008 (`errAuthorizationInternal`)
+    /// followed by -25320 (`errSecInDarkWake`, "in dark wake, no UI possible") five milliseconds
+    /// later: the keychain needed to ask the user and the machine had no way to draw the dialog.
+    /// Both land in `.failed`, both attempts fall inside the same unwakeable instant, and the strip
+    /// then showed "Claude · keychain unavailable" until the user pressed refresh by hand — for a
+    /// condition that had cured itself the moment the display came back.
+    private func resolve() -> (result: UsageTokenReadResult, memoize: Bool) {
         // Retried once: a single transient failure must never be enough to drop the provider.
         for attempt in 1...2 {
             let (status, data) = keychainRead()
             switch KeychainReadOutcome.of(status) {
             case .success:
                 if let data, let token = try? CredentialParser.accessToken(from: data) {
-                    return .token(token)
+                    return (.token(token), true)
                 }
                 logger.error("keychain item read but unusable (OSStatus \(status, privacy: .public))")
-                return .unreadable("credentials unreadable")
+                // The grant is in hand and the item is simply not what we expect; re-reading it is
+                // non-interactive but will keep saying the same thing until the file changes.
+                return (.unreadable("credentials unreadable"), true)
             case .declined:
                 logger.error("keychain read declined (OSStatus \(status, privacy: .public))")
-                return .unreadable("keychain access denied")
+                return (.unreadable("keychain access denied"), true)
             case .notFound:
-                return fallback()
+                return (fallback(), true)
             case .failed:
                 logger.error(
                     "keychain read failed (OSStatus \(status, privacy: .public), attempt \(attempt, privacy: .public))"
                 )
             }
         }
-        return .unreadable("keychain unavailable")
+        // Deliberately NOT memoized. The row still shows the error, so the failure stays visible,
+        // but the next refresh genuinely re-reads instead of replaying this one bad moment forever.
+        return (.unreadable("keychain unavailable"), false)
     }
 
     private func fallback() -> UsageTokenReadResult {
