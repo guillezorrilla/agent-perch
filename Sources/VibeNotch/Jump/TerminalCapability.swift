@@ -78,6 +78,29 @@ struct TerminalCapability: Sendable, Equatable {
         case unsupported
     }
 
+    /// How an answer — an allow/deny keystroke for a waiting card — is delivered to this terminal.
+    ///
+    /// This was `ActionInjector`'s third switch over the same string, and it sat two files away
+    /// from the focus tables with only a comment tying the spellings together. Answering and
+    /// jumping now read the same row, so a terminal cannot be jumpable and unanswerable by
+    /// accident.
+    enum Answer: Sendable, Equatable {
+        /// Addressed by tty, over AppleScript.
+        case iTermAppleScript
+        case terminalAppleScript
+        /// Addressed by tty, over the terminal's own CLI — no main-actor hop needed.
+        case tmuxCLI
+        case wezTermCLI
+        case kittyRemote
+        /// No per-tab tty: locate the tab by cwd in Warp's state database, then post the key.
+        case warpTabByCwd
+        /// No text API at all: focus the surface at this cwd, then post the key.
+        case surfaceByCwd
+        /// Refuse rather than guess. Typing into the wrong app is the one failure worse than
+        /// typing nothing.
+        case unsupported
+    }
+
     /// Canonical, display-cased name. `TerminalNameResolver` emits this; everything downstream
     /// lowercases it, which is what `key` is for.
     let name: String
@@ -87,6 +110,7 @@ struct TerminalCapability: Sendable, Equatable {
     var processMatch: ProcessMatch = ProcessMatch()
     let focus: Focus
     let reopen: Reopen
+    let answer: Answer
 
     var key: String { name.lowercased() }
 
@@ -110,7 +134,8 @@ enum TerminalRegistry {
             bundleIdentifiers: ["com.googlecode.iterm2"],
             processMatch: .init(commandContains: ["iterm2"]),
             focus: .appleScriptTTY,
-            reopen: .iTermAppleScript
+            reopen: .iTermAppleScript,
+            answer: .iTermAppleScript
         ),
         TerminalCapability(
             name: "Terminal",
@@ -118,48 +143,55 @@ enum TerminalRegistry {
             bundleIdentifiers: ["com.apple.Terminal"],
             processMatch: .init(commandContains: ["apple_terminal"], executableEquals: ["terminal"]),
             focus: .appleScriptTTY,
-            reopen: .terminalAppleScript
+            reopen: .terminalAppleScript,
+            answer: .terminalAppleScript
         ),
         TerminalCapability(
             name: "Warp",
             bundleIdentifiers: ["dev.warp.Warp-Stable", "dev.warp.Warp"],
             processMatch: .init(commandContains: ["warpterminal", "warp.app/"]),
             focus: .warpTabIndex,
-            reopen: .warpURLScheme
+            reopen: .warpURLScheme,
+            answer: .warpTabByCwd
         ),
         TerminalCapability(
             name: "tmux",
             processMatch: .init(commandContainsAll: ["tmux", "server"]),
             focus: .unsupported,
-            reopen: .unsupported
+            reopen: .unsupported,
+            answer: .tmuxCLI
         ),
         TerminalCapability(
             name: "Ghostty",
             bundleIdentifiers: ["com.mitchellh.ghostty"],
             processMatch: .init(commandContains: ["ghostty"]),
             focus: .cwdSurface(activatesOnMiss: false),
-            reopen: .ghosttyBundledCLI
+            reopen: .ghosttyBundledCLI,
+            answer: .surfaceByCwd
         ),
         TerminalCapability(
             name: "WezTerm",
             bundleIdentifiers: ["com.github.wez.wezterm"],
             processMatch: .init(commandContains: ["wezterm"]),
             focus: .wezTermCLI,
-            reopen: .wezTermCLI
+            reopen: .wezTermCLI,
+            answer: .wezTermCLI
         ),
         TerminalCapability(
             name: "Kitty",
             bundleIdentifiers: ["net.kovidgoyal.kitty"],
             processMatch: .init(commandContains: ["kitty.app/"], executableEquals: ["kitty"]),
             focus: .unsupported,
-            reopen: .unsupported
+            reopen: .unsupported,
+            answer: .kittyRemote
         ),
         TerminalCapability(
             name: "cmux",
             bundleIdentifiers: ["com.cmuxterm.app"],
             processMatch: .init(commandContains: ["cmux.app/"], executableEquals: ["cmux"]),
             focus: .cwdSurface(activatesOnMiss: true),
-            reopen: .activateApp
+            reopen: .activateApp,
+            answer: .surfaceByCwd
         ),
     ]
 

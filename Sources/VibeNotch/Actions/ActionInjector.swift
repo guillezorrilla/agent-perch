@@ -177,34 +177,47 @@ struct ActionInjector: @unchecked Sendable {
     ) -> ActionInjectionPlan? {
         let terminal = terminalName?.lowercased()
 
-        // The two cwd-addressed terminals first: neither has a per-surface tty to prefer, so a tty
-        // that happens to be known must not divert them.
-        if terminal == "warp" {
-            guard let cwd, !cwd.isEmpty else { return refuse("Warp with no cwd", terminal: terminal) }
-            return built(.warp(cwd: cwd, key: key))
-        }
-        if let app = terminal.flatMap(JumpPlan.CwdFocusApp.init(rawValue:)) {
-            guard let cwd, !cwd.isEmpty else { return refuse("\(app.rawValue) with no cwd", terminal: terminal) }
-            return built(.surface(app: app, cwd: cwd, key: key))
+        /// The tty-addressed arms all share this guard, which used to sit above the switch.
+        func byTTY(_ make: (String) -> ActionInjectionPlan) -> ActionInjectionPlan? {
+            guard let tty, !tty.isEmpty else { return refuse("no tty", terminal: terminal) }
+            return built(make(tty.hasPrefix("/dev/") ? String(tty.dropFirst(5)) : tty))
         }
 
-        guard let tty, !tty.isEmpty else { return refuse("no tty", terminal: terminal) }
-        let normalizedTTY = tty.hasPrefix("/dev/") ? String(tty.dropFirst(5)) : tty
-        switch terminal {
-        case "iterm", "iterm2": return built(.iTerm(tty: normalizedTTY, key: key))
-        case "tmux": return built(.tmux(tty: normalizedTTY, key: key))
-        case "terminal", "terminal.app": return built(.terminal(tty: normalizedTTY, key: key))
-        case "wezterm": return built(.wezTerm(tty: normalizedTTY, key: key))
-        case "kitty": return built(.kitty(tty: normalizedTTY, key: key))
-        default:
-            // `Jumper` owns the answer to "can a session with this terminal name be aimed at by
-            // tty alone" — reused rather than restated, so the two can never drift apart again.
-            // For a NAMED terminal this is false and the answer is refused: guessing which app to
-            // type into is the one failure worse than typing nothing (#42).
+        /// Unknown terminal, or none resolved at all. `Jumper` owns the answer to "can a session
+        /// with this terminal name be aimed at by tty alone" — reused rather than restated. For a
+        /// NAMED terminal it is false and the answer is refused: guessing which app to type into is
+        /// the one failure worse than typing nothing (#42).
+        guard let capability = TerminalRegistry.capability(for: terminal) else {
             guard Jumper.canExactFocus(terminal) else {
                 return refuse("unsupported terminal", terminal: terminal)
             }
-            return built(.ttyLadder(tty: normalizedTTY, key: key))
+            return byTTY { .ttyLadder(tty: $0, key: key) }
+        }
+
+        switch capability.answer {
+        // The cwd-addressed terminals have no per-surface tty to prefer, so a tty that happens to
+        // be known must not divert them — which is why these arms never consult it.
+        case .warpTabByCwd:
+            guard let cwd, !cwd.isEmpty else { return refuse("Warp with no cwd", terminal: terminal) }
+            return built(.warp(cwd: cwd, key: key))
+
+        case .surfaceByCwd:
+            guard let app = JumpPlan.CwdFocusApp(rawValue: capability.key) else {
+                return refuse("no surface app for \(capability.key)", terminal: terminal)
+            }
+            guard let cwd, !cwd.isEmpty else {
+                return refuse("\(app.rawValue) with no cwd", terminal: terminal)
+            }
+            return built(.surface(app: app, cwd: cwd, key: key))
+
+        case .iTermAppleScript: return byTTY { .iTerm(tty: $0, key: key) }
+        case .terminalAppleScript: return byTTY { .terminal(tty: $0, key: key) }
+        case .tmuxCLI: return byTTY { .tmux(tty: $0, key: key) }
+        case .wezTermCLI: return byTTY { .wezTerm(tty: $0, key: key) }
+        case .kittyRemote: return byTTY { .kitty(tty: $0, key: key) }
+
+        case .unsupported:
+            return refuse("unsupported terminal", terminal: terminal)
         }
     }
 
