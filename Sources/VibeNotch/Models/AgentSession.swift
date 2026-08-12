@@ -21,7 +21,9 @@ struct AgentSession: Identifiable, Equatable, Sendable {
     let agentName: String
     let cwd: String
     let modifiedAt: Date
-    let status: SessionStatus
+    /// `var` only so `SessionRetirement.told` can downgrade a row whose process is gone; the
+    /// discovery sources still set it once at init and never touch it again.
+    var status: SessionStatus
     let jumpRung: JumpRung
     let title: String
     let lastPrompt: String?

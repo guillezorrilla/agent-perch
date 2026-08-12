@@ -347,3 +347,63 @@ final class InvaderGlyphAnimationTests: XCTestCase {
         XCTAssertNotEqual(InvaderGlyph.restPixels, InvaderGlyph.stepPixels)
     }
 }
+
+/// A card must not claim to be alive when nothing is running behind it (#64).
+///
+/// `.active` comes from transcript mtime — `SessionStatus.at` grants it for five whole minutes —
+/// so four finished demo sessions sat in the panel with green dots, indistinguishable from the
+/// three live ones. This is #52's rule one level out: liveness reaches the dot now, not just
+/// retirement and ordering.
+final class DeadRowsLookDeadTests: XCTestCase {
+    private func session(_ status: SessionStatus) -> AgentSession {
+        AgentSession(
+            sessionId: "s", agentName: "Claude", cwd: "/tmp/s",
+            modifiedAt: Date(timeIntervalSince1970: 0), status: status,
+            jumpRung: .newTab, title: "s", lastPrompt: nil, tty: nil, terminalName: nil,
+            currentActivity: nil, notificationMessage: nil, pendingToolName: nil,
+            pendingToolInput: nil, resumeCommand: nil
+        )
+    }
+
+    func testASustainedlyAbsentProcessMakesAnActiveRowFinished() {
+        XCTAssertEqual(
+            SessionRetirement.told(session(.active), sustainedlyAbsent: true).status,
+            .done
+        )
+        XCTAssertEqual(
+            SessionRetirement.told(session(.working), sustainedlyAbsent: true).status,
+            .done
+        )
+    }
+
+    /// The whole reason absence has to be SUSTAINED: one missed `pgrep`/`lsof` pass must never
+    /// grey out a session that is genuinely working.
+    func testAPresentProcessLeavesTheStatusAlone() {
+        XCTAssertEqual(
+            SessionRetirement.told(session(.active), sustainedlyAbsent: false).status,
+            .active
+        )
+        XCTAssertEqual(
+            SessionRetirement.told(session(.working), sustainedlyAbsent: false).status,
+            .working
+        )
+    }
+
+    /// Dissolving a card the user is looking at is a worse surprise than one that sorts last —
+    /// `ordered` already sinks a dead row's stale prompt below every live session.
+    func testAPendingRequestIsNotDowngraded() {
+        XCTAssertEqual(
+            SessionRetirement.told(session(.needsAction), sustainedlyAbsent: true).status,
+            .needsAction
+        )
+    }
+
+    func testAlreadyFinishedStatesAreUntouched() {
+        for status in [SessionStatus.idle, .done, .ended] {
+            XCTAssertEqual(
+                SessionRetirement.told(session(status), sustainedlyAbsent: true).status,
+                status
+            )
+        }
+    }
+}

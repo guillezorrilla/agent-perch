@@ -88,7 +88,13 @@ struct SessionRetirement {
                 guard due > now else { continue }
                 earliestDue = min(earliestDue ?? due, due)
             }
-            surviving.append(row)
+            // The SAME evidence bar retirement uses. A single `pgrep`/`lsof` pass can miss a
+            // process that is genuinely there, and grey-ing out a live working session on one bad
+            // scan is the same class of mistake as retiring it.
+            let sustained = state.isAbsent && absentSince[row.sessionId].map {
+                now.timeIntervalSince($0) >= Self.processAbsenceGrace
+            } == true
+            surviving.append(Self.told(row, sustainedlyAbsent: sustained))
         }
         // Never tighter than half a second: a sweep exists to notice a deadline passing, not to
         // spin the store.
@@ -98,6 +104,31 @@ struct SessionRetirement {
             Self.collapsingFinishedDuplicates(surviving, liveness: liveness),
             liveness: liveness
         )
+    }
+
+    /// A row with nothing running behind it is not active, whatever its transcript says.
+    ///
+    /// `.active` and `.working` come from transcript mtime (`SessionStatus.at` grants `.active` for
+    /// five minutes) and from the hook stream — neither of which notices a process exiting. So a
+    /// session that finished seconds ago kept a green dot for the rest of those five minutes, and
+    /// four dead demo sessions sat in the panel looking exactly like the three live ones.
+    ///
+    /// This is #52's rule one level further out: a card must not claim to be doing something it
+    /// is not. `.done` is the honest state — finished, still listed for `finishedSessionGrace`
+    /// because the session you just closed is the one you most want back (#10), but grey.
+    ///
+    /// `.needsAction` is deliberately NOT downgraded here: `ordered` already sinks a dead row's
+    /// stale prompt below every live session, and silently dissolving a card the user is looking
+    /// at is a worse surprise than one that sorts last. `.unasked` rows are never touched — this
+    /// app has no standing to call an IDE workspace dead.
+    ///
+    /// - Parameter sustainedlyAbsent: absence that has already outlived `processAbsenceGrace`,
+    ///   never a single empty scan — see the caller.
+    static func told(_ row: AgentSession, sustainedlyAbsent: Bool) -> AgentSession {
+        guard sustainedlyAbsent, row.status == .active || row.status == .working else { return row }
+        var row = row
+        row.status = .done
+        return row
     }
 
     /// When this row is due to be retired, or `nil` if it is not on its way out at all.
