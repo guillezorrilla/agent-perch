@@ -19,6 +19,42 @@ final class WarpTabLocatorTests: XCTestCase {
         }
     }
 
+    /// The #55 shape: two sessions in one folder. `tabIndex` can only ever name one of these tabs,
+    /// which is why both cards used to focus the same one.
+    func testTabIndicesReturnsEveryPaneAtACwdInCreationOrder() throws {
+        try withFixtureDatabase { databaseURL, database in
+            try createFixtureSchema(in: database)
+            try execute("""
+                INSERT INTO tabs VALUES (10, 1), (20, 1), (30, 1);
+                INSERT INTO pane_nodes VALUES (100, 10), (200, 20), (300, 30);
+                INSERT INTO terminal_panes VALUES (100, '/repo'), (200, '/other'), (300, '/repo');
+                INSERT INTO pane_leaves VALUES
+                    (100, 'terminal', 0), (200, 'terminal', 0), (300, 'terminal', 1);
+                """, in: database)
+
+            let locator = WarpTabLocator(databaseURL: databaseURL)
+            XCTAssertEqual(locator.tabIndices(forCwd: "/repo"), [1, 3])
+            XCTAssertEqual(
+                locator.tabIndex(forCwd: "/repo"), 3,
+                "the single-answer query is unchanged — one session in a folder still jumps as before"
+            )
+        }
+    }
+
+    func testTabIndicesIsEmptyForACwdWithNoPanes() throws {
+        try withFixtureDatabase { databaseURL, database in
+            try createFixtureSchema(in: database)
+            try execute("""
+                INSERT INTO tabs VALUES (10, 1);
+                INSERT INTO pane_nodes VALUES (100, 10);
+                INSERT INTO terminal_panes VALUES (100, '/repo');
+                INSERT INTO pane_leaves VALUES (100, 'terminal', 1);
+                """, in: database)
+
+            XCTAssertEqual(WarpTabLocator(databaseURL: databaseURL).tabIndices(forCwd: "/gone"), [])
+        }
+    }
+
     func testFixtureDatabasePrefersFocusedCwdMatchAcrossWindows() throws {
         try withFixtureDatabase { databaseURL, database in
             try createFixtureSchema(in: database)
@@ -302,5 +338,65 @@ final class WarpDatabaseAccessCacheTests: XCTestCase {
                 NSLocalizedDescriptionKey: message
             ])
         }
+    }
+}
+
+/// Pairing the panes Warp knows about against the processes it does not (#55).
+final class WarpTabPairingTests: XCTestCase {
+    private func agent(_ pid: Int32, _ cwd: String, startedAt: Date?) -> ClaudeProcess {
+        ClaudeProcess(pid: pid, command: "claude", cwd: cwd, tty: nil, startedAt: startedAt)
+    }
+
+    private let epoch = Date(timeIntervalSince1970: 1_700_000_000)
+
+    func testAgentsSharingACwdAreOrderedOldestFirst() {
+        let table = [
+            agent(300, "/repo", startedAt: epoch.addingTimeInterval(200)),
+            agent(100, "/repo", startedAt: epoch),
+            agent(200, "/elsewhere", startedAt: epoch.addingTimeInterval(100))
+        ]
+        XCTAssertEqual(Jumper.agentsSharingCwd("/repo", in: table).map(\.pid), [100, 300])
+    }
+
+    /// Same second, so `startedAt` cannot separate them; the answer must still not wobble between
+    /// reconciles, because a jump that alternates tabs is worse than one that is merely wrong.
+    func testAgentsStartedInTheSameInstantAreOrderedStablyByPID() {
+        let table = [agent(300, "/repo", startedAt: epoch), agent(100, "/repo", startedAt: epoch)]
+        XCTAssertEqual(Jumper.agentsSharingCwd("/repo", in: table).map(\.pid), [100, 300])
+    }
+
+    /// The bug itself: two sessions, two panes, two different tabs.
+    func testEachAgentInAFolderPairsWithItsOwnTab() {
+        let peers = [
+            agent(100, "/repo", startedAt: epoch),
+            agent(200, "/repo", startedAt: epoch.addingTimeInterval(60))
+        ]
+        XCTAssertEqual(Jumper.pairedWarpTab(pid: 100, peers: peers, tabIndices: [2, 5]), 2)
+        XCTAssertEqual(Jumper.pairedWarpTab(pid: 200, peers: peers, tabIndices: [2, 5]), 5)
+    }
+
+    /// A pane closed, or a session started outside Warp: the two orders no longer line up, so a
+    /// position means nothing. Better a fresh tab than confidently typing into someone else's.
+    func testPairingRefusesWhenTheCountsDisagree() {
+        let peers = [
+            agent(100, "/repo", startedAt: epoch),
+            agent(200, "/repo", startedAt: epoch.addingTimeInterval(60))
+        ]
+        XCTAssertNil(Jumper.pairedWarpTab(pid: 100, peers: peers, tabIndices: [2]))
+        XCTAssertNil(Jumper.pairedWarpTab(pid: 100, peers: peers, tabIndices: [2, 5, 7]))
+        XCTAssertNil(Jumper.pairedWarpTab(pid: 100, peers: peers, tabIndices: []))
+    }
+
+    func testPairingRefusesAPIDThatIsNotOneOfThePeers() {
+        let peers = [agent(100, "/repo", startedAt: epoch), agent(200, "/repo", startedAt: epoch)]
+        XCTAssertNil(Jumper.pairedWarpTab(pid: 999, peers: peers, tabIndices: [2, 5]))
+        XCTAssertNil(Jumper.pairedWarpTab(pid: nil, peers: peers, tabIndices: [2, 5]))
+    }
+
+    /// Warp binds ⌘1…⌘9 and nothing past it, which is the only way this app can focus a tab.
+    func testPairingRefusesATabBeyondTheDigitKeys() {
+        let peers = [agent(100, "/repo", startedAt: epoch), agent(200, "/repo", startedAt: epoch)]
+        XCTAssertNil(Jumper.pairedWarpTab(pid: 200, peers: peers, tabIndices: [1, 10]))
+        XCTAssertEqual(Jumper.pairedWarpTab(pid: 100, peers: peers, tabIndices: [1, 10]), 1)
     }
 }
