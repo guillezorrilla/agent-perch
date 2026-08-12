@@ -6,14 +6,14 @@ The four SVGs here are generated:
 python3 scripts/make-readme-art.py
 ```
 
-Every name in them is invented. They are **vector reproductions of the real UI, not screenshots.** Every colour
+The wallpaper is ours -- a field of the app's own invader at texture opacity, with a brand-green glow behind the notch -- and every name in them is invented. They are **vector reproductions of the real UI, not screenshots.** Every colour
 and the invader sprite are copied from `Sources/VibeNotch/UI/InvaderGlyph.swift`,
 so they are accurate — but if the palette or a card layout changes there, change
 it in the generator and re-run, or they will quietly drift.
 
 | file | shows |
 |---|---|
-| `hero.svg` | The panel hanging from a MacBook notch — menu bar either side, so it is obvious where this lives |
+| `hero.svg` | A product shot: the panel hanging from the notch, over a desktop with the agents it is reporting on |
 | `permission-card.svg` | A permission request with the tool, target and diff |
 | `question-card.svg` | An `AskUserQuestion` prompt with numbered options |
 | `plan-card.svg` | A plan review with headings, numbered steps and the three real choices |

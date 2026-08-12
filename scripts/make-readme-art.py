@@ -166,72 +166,149 @@ def option_row(x, y, w, n, label, desc, accent=BLUE):
 
 # --- images ---------------------------------------------------------------
 
-def menu_bar_glyphs(x, y, w):
-    """Enough of a macOS menu bar to place the panel, without pretending to be a screenshot."""
+def wallpaper_defs():
+    """Ours, not a desktop picture: deep indigo, a brand-green glow behind the notch, and a
+    faint field of invaders — the app's own motif, at the opacity of a texture."""
+    inv = "".join(
+        f'<rect x="{c * 3}" y="{r * 3}" width="3" height="3"/>'
+        for r, row in enumerate(REST) for c, ch in enumerate(row) if ch == "#"
+    )
+    return (
+        '<defs>'
+        '<linearGradient id="sky" x1="0.15" y1="0" x2="0.85" y2="1">'
+        '<stop offset="0%" stop-color="#1B1B3A"/><stop offset="45%" stop-color="#141430"/>'
+        '<stop offset="100%" stop-color="#08080F"/></linearGradient>'
+        '<radialGradient id="glow" cx="0.5" cy="0" r="0.75">'
+        '<stop offset="0%" stop-color="#4ADE80" stop-opacity="0.30"/>'
+        '<stop offset="55%" stop-color="#2AA5B8" stop-opacity="0.11"/>'
+        '<stop offset="100%" stop-color="#4ADE80" stop-opacity="0"/></radialGradient>'
+        '<radialGradient id="corner" cx="0.08" cy="1" r="0.7">'
+        '<stop offset="0%" stop-color="#7C5BD6" stop-opacity="0.22"/>'
+        '<stop offset="100%" stop-color="#7C5BD6" stop-opacity="0"/></radialGradient>'
+        f'<pattern id="invaders" width="120" height="120" patternUnits="userSpaceOnUse">'
+        f'<g fill="#8FA0FF" opacity="0.055" transform="translate(18,20)">{inv}</g>'
+        f'<g fill="#8FA0FF" opacity="0.045" transform="translate(72,74)">{inv}</g>'
+        f'</pattern>'
+        '<linearGradient id="win" x1="0" y1="0" x2="0.3" y2="1">'
+        '<stop offset="0%" stop-color="#26262C" stop-opacity="0.95"/>'
+        '<stop offset="100%" stop-color="#141418" stop-opacity="0.95"/></linearGradient>'
+        '<filter id="drop" x="-30%" y="-30%" width="160%" height="190%">'
+        '<feDropShadow dx="0" dy="16" stdDeviation="20" flood-color="#000" flood-opacity="0.6"/>'
+        '</filter>'
+        '<filter id="halo" x="-50%" y="-50%" width="200%" height="200%">'
+        '<feDropShadow dx="0" dy="0" stdDeviation="26" flood-color="#4ADE80" flood-opacity="0.30"/>'
+        '</filter>'
+        '</defs>'
+    )
+
+
+def wallpaper(x, y, w, h):
+    return "\n".join([
+        rect(x, y, w, h, "url(#sky)"),
+        rect(x, y, w, h, "url(#invaders)"),
+        rect(x, y, w, h, "url(#corner)"),
+        rect(x, y, w, h * 0.72, "url(#glow)"),
+    ])
+
+
+def menu_bar(x, y, w):
     out = []
-    out.append(f'<circle cx="{x + 14}" cy="{y + 12}" r="5" fill="#C9C9CE" opacity="0.85"/>')
-    out.append(f'<rect x="{x + 12}" y="{y + 3}" width="4" height="5" rx="2" fill="#0B0B12"/>')
-    out.append(text(x + 30, y + 16, "Finder", size=11, fill="#D8D8DD", weight="600"))
-    out.append(text(x + 78, y + 16, "File", size=11, fill="#B8B8BE"))
-    out.append(text(x + 110, y + 16, "Edit", size=11, fill="#B8B8BE"))
-    out.append(text(x + 144, y + 16, "View", size=11, fill="#B8B8BE"))
+    out.append(f'<circle cx="{x + 14}" cy="{y + 12}" r="5" fill="#E8E8ED" opacity="0.92"/>')
+    out.append(f'<rect x="{x + 12}" y="{y + 3}" width="4" height="5" rx="2" fill="#1A1830"/>')
+    out.append(text(x + 32, y + 16, "VibeNotch", size="11.5", fill="#F2F2F5", weight="600"))
+    # Only what fits clear of the panel: a menu title sliced in half reads as a rendering bug.
+    for i, m in enumerate(["File", "Edit", "View"]):
+        out.append(text(x + 100 + i * 44, y + 16, m, size="11.5", fill="#DCDCE2"))
     rx = x + w
-    out.append(text(rx - 14, y + 16, "9:41", size=11, fill="#D8D8DD", anchor="end"))
-    out.append(f'<rect x="{rx - 70}" y="{y + 6}" width="18" height="10" rx="3" '
-               f'fill="none" stroke="#B8B8BE" stroke-width="1.2" opacity="0.9"/>')
-    out.append(f'<rect x="{rx - 68}" y="{y + 8}" width="11" height="6" rx="1.5" fill="#B8B8BE"/>')
+    out.append(text(rx - 12, y + 16, "Tue 9:41", size="11.5", fill="#F2F2F5", anchor="end"))
+    out.append(f'<rect x="{rx - 96}" y="{y + 6}" width="19" height="10" rx="3" fill="none" '
+               f'stroke="#E8E8ED" stroke-width="1.2" opacity="0.95"/>')
+    out.append(f'<rect x="{rx - 94}" y="{y + 8}" width="13" height="6" rx="1.5" fill="#E8E8ED"/>')
     for i, r in enumerate([3.5, 6.5, 9.5]):
-        out.append(f'<path d="M {rx - 100} {y + 17} a {r} {r} 0 0 1 {r * 2} 0" fill="none" '
-                   f'stroke="#B8B8BE" stroke-width="1.3" opacity="{0.45 + i * 0.2}"/>')
+        out.append(f'<path d="M {rx - 130} {y + 17} a {r} {r} 0 0 1 {r * 2} 0" fill="none" '
+                   f'stroke="#E8E8ED" stroke-width="1.4" opacity="{0.4 + i * 0.22}"/>')
+    return "\n".join(out)
+
+
+def terminal_window(x, y, w, h, title, lines):
+    """A terminal behind the panel: the agents the notch is actually reporting on."""
+    out = [f'<g filter="url(#drop)">', rect(x, y, w, h, "url(#win)", r=11), '</g>']
+    out.append(rect(x, y, w, 30, "#35353B", r=11, opacity=0.92))
+    out.append(rect(x, y + 18, w, 12, "#35353B", opacity=0.92))
+    for i, c in enumerate(["#FF5F57", "#FEBC2E", "#28C840"]):
+        out.append(f'<circle cx="{x + 17 + i * 17}" cy="{y + 15}" r="5.5" fill="{c}"/>')
+    out.append(text(x + w / 2, y + 19, title, size=11, fill="#A9A9B2", font=MONO, anchor="middle"))
+    ty = y + 52
+    for kind, s in lines:
+        if kind == "dot":
+            out.append(f'<circle cx="{x + 20}" cy="{ty - 4}" r="3.5" fill="{GREEN}"/>')
+            out.append(text(x + 32, ty, s, size=11.5, fill="#E3E3E8", font=MONO))
+            ty += 21
+        elif kind == "sub":
+            out.append(text(x + 44, ty, "└─ " + s, size=11, fill="#8A8A93", font=MONO))
+            ty += 22
+        else:
+            out.append(text(x + 32, ty, s, size=11.5, fill=GREEN, font=MONO))
+            ty += 21
     return "\n".join(out)
 
 
 def hero():
-    """The panel where it actually lives: hanging from the notch of a MacBook display."""
-    w, h = 1060, 496
-    bezel = 11
+    """The panel where it actually lives: hanging from the notch, over the desktop it watches."""
+    w, h = 1100, 600
+    bezel = 12
     sw, sh = w - bezel * 2, h - bezel * 2
-    menu_h = 26
-    panel_w = 700
+    panel_w = 596
     panel_x = (w - panel_w) / 2
-    panel_h = 396
+    panel_h = 262
 
-    b = []
-    b.append('<defs><linearGradient id="wall" x1="0" y1="0" x2="0.65" y2="1">'
-             '<stop offset="0%" stop-color="#2E2748"/>'
-             '<stop offset="50%" stop-color="#1B1932"/>'
-             '<stop offset="100%" stop-color="#0D0C16"/></linearGradient>'
-             f'<clipPath id="screen"><rect x="{bezel}" y="{bezel}" width="{sw}" height="{sh}" rx="16"/></clipPath>'
-             '</defs>')
-    # The lid: bezel, then the display.
-    b.append(rect(0, 0, w, h, "#08080A", r=26))
-    b.append(rect(bezel, bezel, sw, sh, "url(#wall)", r=16))
+    b = [wallpaper_defs()]
+    b.append(f'<clipPath id="screen"><rect x="{bezel}" y="{bezel}" width="{sw}" height="{sh}" rx="18"/></clipPath>')
+    b.append(rect(0, 0, w, h, "#0A0A0C", r=30))
     b.append('<g clip-path="url(#screen)">')
-    b.append(rect(bezel, bezel, sw, menu_h, "#000000", opacity=0.45))
-    b.append(menu_bar_glyphs(bezel + 12, bezel + 4, sw - 24))
-    # The panel: flush with the top edge and square there, because it grows out of the notch;
-    # rounded only at the bottom. That is how DynamicNotchKit draws it.
-    b.append(f'<path d="M {panel_x} {bezel} h {panel_w} v {panel_h - 24} '
-             f'a 24 24 0 0 1 -24 24 h {-(panel_w - 48)} a 24 24 0 0 1 -24 -24 Z" fill="#0A0A0A"/>')
-    b.append('</g>')
-    # A hairline so the panel reads as an object against a dark wallpaper.
-    b.append(f'<path d="M {panel_x} {bezel} v {panel_h - 24} a 24 24 0 0 0 24 24 h {panel_w - 48} '
-             f'a 24 24 0 0 0 24 -24 v {-(panel_h - 24)}" fill="none" '
-             f'stroke="#2A2A2E" stroke-width="1" opacity="0.7"/>')
+    b.append(wallpaper(bezel, bezel, sw, sh))
+    b.append(rect(bezel, bezel, sw, 26, "#000000", opacity=0.38))
+    b.append(menu_bar(bezel + 14, bezel + 4, sw - 28))
 
-    inner_x = panel_x + 24
-    inner_w = panel_w - 48
-    b.append(usage_strip(inner_x, bezel + 42, inner_w))
-    y = bezel + 98
-    b.append(full_card(inner_x, y, inner_w, "api-gateway", "You: add retries to the client",
-                       "Running the test suite", "dot", "<1m",
-                       meta="2m 31s \u00b7 154.0k tokens", glyph_color=GREEN, frame=STEP))
-    b.append(full_card(inner_x, y + 104, inner_w, "checkout-flow", "You: wire up the webhook",
-                       "Needs input \u2014 click to jump", AMBER, "3m",
-                       glyph_color=AMBER, frame=REST, h=76))
-    b.append(compact_row(inner_x, y + 192, inner_w, "web-dashboard", "12m"))
-    b.append(compact_row(inner_x, y + 236, inner_w, "docs-site", "41m"))
-    return svg(w, h, "\n".join(b), bg="#000000", radius=26)
+    # The work the notch is reporting on, arranged so all three titles stay readable.
+    b.append(terminal_window(70, 330, 372, 214, "gemini — web-dashboard", [
+        ("dot", "Analyzing the slow queries."),
+        ("dot", "Read(schema.prisma)"),
+        ("sub", "1.2 KB"),
+        ("dot", "Edit(src/db/queries.ts)"),
+        ("sub", "Updated (+8 -23)"),
+    ]))
+    b.append(terminal_window(646, 306, 384, 206, "codex — checkout-flow", [
+        ("dot", "Building the REST endpoints."),
+        ("dot", "Write(src/routes/users.ts)"),
+        ("sub", "New file (47 lines)"),
+    ]))
+    b.append(terminal_window(330, 392, 430, 190, "claude — api-gateway", [
+        ("dot", "Edit(src/auth/middleware.ts)"),
+        ("sub", "Updated (+3 -1)"),
+        ("dot", "Bash(npm test)"),
+        ("sub", "8 passed"),
+        ("ok", "All done. 3 files changed."),
+    ]))
+
+    # Flush and square at the top because it grows out of the notch, rounded only at the
+    # bottom — how DynamicNotchKit draws it. The halo is the brand colour, not a macOS shadow.
+    b.append('<g filter="url(#halo)">')
+    b.append(f'<path d="M {panel_x} {bezel} h {panel_w} v {panel_h - 26} '
+             f'a 26 26 0 0 1 -26 26 h {-(panel_w - 52)} a 26 26 0 0 1 -26 -26 Z" fill="#050505"/>')
+    b.append('</g>')
+    b.append('</g>')
+
+    ix = panel_x + 20
+    iw = panel_w - 40
+    b.append(usage_strip(ix, bezel + 30, iw))
+    y = bezel + 78
+    b.append(full_card(ix, y, iw, "api-gateway", "You: fix the auth bug in middleware",
+                       "Done — click to jump", GREEN, "28m",
+                       glyph_color=GREEN, frame=REST, terminal="iTerm", h=74))
+    b.append(compact_row(ix, y + 86, iw, "checkout-flow", "1h", dot=BLUE))
+    b.append(compact_row(ix, y + 128, iw, "web-dashboard", "5h", dot=GREEN))
+    return svg(w, h, "\n".join(b), bg="#000000", radius=30)
 
 
 def permission_card():
