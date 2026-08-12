@@ -246,14 +246,16 @@ struct PlanReviewCard: View {
             }
 
             ScrollView {
-                Group {
-                    if let renderedMarkdown {
-                        Text(renderedMarkdown)
-                    } else {
-                        Text(markdown)
+                VStack(alignment: .leading, spacing: 3) {
+                    ForEach(Array(PlanMarkdown.lines(markdown).enumerated()), id: \.offset) { _, line in
+                        Text(Self.rendered(line.body))
+                            .font(.system(
+                                size: line.isHeading ? 13 : 12,
+                                weight: line.isHeading ? .semibold : .regular
+                            ))
+                            .padding(.top, line.isHeading ? 5 : 0)
                     }
                 }
-                .font(.system(size: 12))
                 .foregroundStyle(.white.opacity(0.9))
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -273,11 +275,47 @@ struct PlanReviewCard: View {
         .accessibilityElement(children: .contain)
     }
 
-    private var renderedMarkdown: AttributedString? {
-        try? AttributedString(
-            markdown: markdown,
-            options: .init(interpretedSyntax: .full)
-        )
+    /// Inline styling only — bold, italic, `code` — for ONE line at a time.
+    ///
+    /// `.full` is what produced the blob: it parses blocks correctly but stores them as
+    /// presentation intents, and a single SwiftUI `Text` ignores those entirely, so every heading
+    /// and list item ran together into one paragraph ("…a small Python CLIContextHypothetical…").
+    /// Splitting first and parsing inline-only keeps the author's own line breaks, which are the
+    /// structure that was being thrown away.
+    private static func rendered(_ line: String) -> AttributedString {
+        (try? AttributedString(
+            markdown: line,
+            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        )) ?? AttributedString(line)
+    }
+}
+
+/// Splits plan markdown into renderable lines. Pure and separate from the view so the part that
+/// can actually be wrong — what counts as a heading — is testable without a running SwiftUI stack.
+enum PlanMarkdown {
+    struct Line: Equatable {
+        let body: String
+        let isHeading: Bool
+    }
+
+    /// ATX headings (`## Plan`) lose their marker and render bold; everything else is passed
+    /// through untouched, blank lines included — they are the paragraph spacing.
+    ///
+    /// A bare `#` with no text after it is NOT a heading: in a plan it is far more likely to be a
+    /// shell comment or a Python line inside a fenced block than a title.
+    static func lines(_ markdown: String) -> [Line] {
+        markdown.components(separatedBy: .newlines).map { raw in
+            let trimmed = raw.trimmingCharacters(in: .whitespaces)
+            let hashes = trimmed.prefix { $0 == "#" }
+            let rest = trimmed.dropFirst(hashes.count)
+            guard !hashes.isEmpty, hashes.count <= 6, rest.first == " " else {
+                return Line(body: raw, isHeading: false)
+            }
+            return Line(
+                body: String(rest).trimmingCharacters(in: .whitespaces),
+                isHeading: true
+            )
+        }
     }
 }
 
