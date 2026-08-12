@@ -66,6 +66,104 @@ enum PendingAction: Equatable, Sendable {
     case plan(String)
     case question(QuestionPrompt)
 
+    /// Whether this action blocks on the user by itself.
+    ///
+    /// `AskUserQuestion` and `ExitPlanMode` block by definition — the tool call IS the wait — so
+    /// they corroborate themselves and need no notification to back them up. A permission request
+    /// does not: `PreToolUse` fires for every matching call, auto-approved ones included.
+    ///
+    /// This one property replaces the same three-arm switch written out in two files, once in
+    /// `NotificationOutcome.of` (the write-time gate that flips a session to `.needsAction`) and
+    /// once in `resolve` below (the read-time gate that picks the card). They agreed only because
+    /// somebody kept them agreeing.
+    var blocksOnItsOwn: Bool {
+        switch self {
+        case .question, .plan: true
+        case .permission: false
+        }
+    }
+
+    /// The numbered choices this card offers, in ⌘1…⌘n order.
+    ///
+    /// Empty for a question, whose choices come from the prompt itself and are answered through it
+    /// rather than by label.
+    ///
+    /// This lives on the action rather than on the card views because the card is not the only
+    /// thing that answers it: the keyboard monitor does too, and when each derived the list
+    /// separately they could disagree about which numbers were valid and what pressing one meant.
+    var numberedOptions: [(label: String, description: String)] {
+        switch self {
+        case let .permission(request): Self.permissionAffirmatives(forTool: request.toolName)
+        case .plan: Self.planOptions
+        case .question: []
+        }
+    }
+
+    /// Whether ⌘Y / ⌘N mean anything for this card.
+    ///
+    /// A question has numbered answers only — allow/deny would be a guess. For a plan, ⌘Y used to
+    /// type a `1`, and `1` on the plan prompt is AUTO MODE: the one choice a user pressing
+    /// "Approve" is least likely to have meant (#66).
+    var acceptsAllowDeny: Bool {
+        switch self {
+        case .permission: true
+        case .plan, .question: false
+        }
+    }
+
+    /// The label for a 1-based option number, or `nil` when that number is not on offer.
+    ///
+    /// The bounds check `pendingCard` and `handleShortcut` each used to make separately — and
+    /// which `pendingCard`'s plan arm did not make at all, indexing the array directly.
+    func optionLabel(_ number: Int) -> String? {
+        let options = numberedOptions
+        guard options.indices.contains(number - 1) else { return nil }
+        return options[number - 1].label
+    }
+
+    /// The affirmative half of Claude Code's permission prompt, which has three options where this
+    /// card used to offer two (#61). Only "yes" is spelled the same for every tool; option 2 —
+    /// the one worth having, since it is the difference between answering one card and answering
+    /// ten — is worded per tool, so it is derived from the recorded tool name rather than guessed.
+    ///
+    /// Deny is NOT a third row here on purpose. Typing `3` assumes the prompt has exactly three
+    /// options, which is true for the tools above and not something this app can know in general;
+    /// Escape cancels whatever shape the prompt is. So the digits cover the two "yes" paths and
+    /// the proven Escape path stays where it was, unchanged and untouched by this.
+    static func permissionAffirmatives(forTool tool: String) -> [(label: String, description: String)] {
+        [
+            ("Yes", "Just this once"),
+            (rememberLabel(forTool: tool), "Stops this card coming back")
+        ]
+    }
+
+    private static func rememberLabel(forTool tool: String) -> String {
+        switch tool {
+        case "Edit", "MultiEdit", "Write", "NotebookEdit":
+            return "Yes, allow all edits this session"
+        case "Bash":
+            return "Yes, don't ask again for this command"
+        default:
+            return "Yes, and don't ask again"
+        }
+    }
+
+    /// Claude Code's own plan prompt, in its own order — the card exists to answer THAT prompt, and
+    /// ⌘1…⌘3 type the matching digit into it.
+    ///
+    /// Approve/Deny was not just incomplete, it was misleading: "Approve" typed a `1`, and `1` on
+    /// this prompt is *auto mode*, not the manual approval the button implied (#66). Naming the
+    /// three real choices is the only way the card can be honest about what it is about to send.
+    ///
+    /// Coupled to another app's wording by construction. The DIGITS are the contract — those have
+    /// been stable — and the labels are what the user reads before pressing one, so a wording drift
+    /// shows up as a stale label rather than a wrong keystroke.
+    static let planOptions: [(label: String, description: String)] = [
+        ("Yes, and use auto mode", "Claude edits without asking again"),
+        ("Yes, manually approve edits", "Every edit still asks first"),
+        ("Tell Claude what to change", "Opens the session so you can type feedback")
+    ]
+
     /// The single answer to "is this session really waiting on the user, and for what".
     ///
     /// `PreToolUse` fires for EVERY matching tool call, auto-approved ones included, so a recorded
@@ -85,15 +183,9 @@ enum PendingAction: Equatable, Sendable {
     ) -> PendingAction? {
         guard status == .needsAction else { return nil }
         let recorded = parse(toolName: toolName, input: toolInput)
-        switch recorded {
-        // A question or a plan IS the thing being waited on: `AskUserQuestion`/`ExitPlanMode`
-        // block on the user by definition, so the tool call corroborates itself and needs no
-        // notification to back it up.
-        case .some(.question), .some(.plan):
-            return recorded
-        case .some(.permission), .none:
-            break
-        }
+        // A question or a plan IS the thing being waited on, so the tool call corroborates itself
+        // and needs no notification to back it up. See `blocksOnItsOwn`.
+        if recorded?.blocksOnItsOwn == true { return recorded }
 
         guard let notificationMessage,
               case let .permission(tool) = NotificationKind.classify(notificationMessage) else {
