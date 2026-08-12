@@ -602,3 +602,57 @@ final class ProgressViewTests: XCTestCase {
         return url
     }
 }
+
+/// The plan card rendered every heading and list item into one run-on paragraph (#62): `.full`
+/// markdown parsing stores block structure as presentation intents and SwiftUI's `Text` drops
+/// them. These cover the split that replaced it.
+final class PlanMarkdownTests: XCTestCase {
+    func testHeadingsLoseTheirMarkerAndAreFlagged() {
+        XCTAssertEqual(
+            PlanMarkdown.lines("## Plan"),
+            [PlanMarkdown.Line(body: "Plan", isHeading: true)]
+        )
+        XCTAssertEqual(
+            PlanMarkdown.lines("###### Deep"),
+            [PlanMarkdown.Line(body: "Deep", isHeading: true)]
+        )
+    }
+
+    /// The reported blob: three blocks that used to concatenate into "CLIContextHypothetical".
+    func testEachBlockStaysOnItsOwnLine() {
+        let lines = PlanMarkdown.lines("Add --version to a CLI\n## Context\nHypothetical: a tool")
+        XCTAssertEqual(lines, [
+            PlanMarkdown.Line(body: "Add --version to a CLI", isHeading: false),
+            PlanMarkdown.Line(body: "Context", isHeading: true),
+            PlanMarkdown.Line(body: "Hypothetical: a tool", isHeading: false)
+        ])
+    }
+
+    func testBlankLinesSurviveAsParagraphSpacing() {
+        XCTAssertEqual(PlanMarkdown.lines("a\n\nb").count, 3)
+        XCTAssertEqual(PlanMarkdown.lines("a\n\nb")[1], PlanMarkdown.Line(body: "", isHeading: false))
+    }
+
+    /// A shell comment or a `#!` line inside a plan is not a title.
+    func testAHashWithoutTextIsNotAHeading() {
+        XCTAssertEqual(
+            PlanMarkdown.lines("#!/bin/sh"),
+            [PlanMarkdown.Line(body: "#!/bin/sh", isHeading: false)]
+        )
+        XCTAssertEqual(PlanMarkdown.lines("#"), [PlanMarkdown.Line(body: "#", isHeading: false)])
+        XCTAssertEqual(
+            PlanMarkdown.lines("####### too deep"),
+            [PlanMarkdown.Line(body: "####### too deep", isHeading: false)]
+        )
+    }
+
+    func testListItemsArePassedThroughUntouched() {
+        XCTAssertEqual(
+            PlanMarkdown.lines("1. Define __version__\n- bullet"),
+            [
+                PlanMarkdown.Line(body: "1. Define __version__", isHeading: false),
+                PlanMarkdown.Line(body: "- bullet", isHeading: false)
+            ]
+        )
+    }
+}
