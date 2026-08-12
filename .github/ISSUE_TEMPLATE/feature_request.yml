@@ -1,0 +1,23 @@
+name: Feature request
+description: Something the app should do
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you're trying to do today, and where it falls down.
+    validations: { required: true }
+  - type: textarea
+    id: idea
+    attributes:
+      label: What you have in mind
+  - type: textarea
+    id: evidence
+    attributes:
+      label: How would the app know?
+      description: |
+        Optional, but the most useful thing you can write. This app tries never to
+        display something it hasn't verified — so if a feature means showing new
+        state, what evidence would make it true, and what should it show when that
+        evidence is missing?
