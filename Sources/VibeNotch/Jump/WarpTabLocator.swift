@@ -25,6 +25,25 @@ struct WarpTabLocator {
     ///   (#23). Both read fresh, off the main actor, which is what makes the copy affordable
     ///   (#32); the window still governs how often the TCC-gated container is touched at all.
     func tabIndex(forCwd cwd: String, reusingRecentCopy: Bool = true) -> Int? {
+        withDatabase(reusingRecentCopy: reusingRecentCopy) { tabIndex(in: $0, forCwd: cwd) }
+    }
+
+    /// Every terminal pane at `cwd`, as tab indices, ordered by pane id — which is Warp's own
+    /// creation order.
+    ///
+    /// `tabIndex` answers "a tab at this cwd" and cannot do better, because two panes in one folder
+    /// are indistinguishable in Warp's database: no tty, no pid, and identical `shell_launch_data`.
+    /// So N sessions in a repo all resolved to one index and every card focused the same tab (#55).
+    ///
+    /// The information Warp lacks lives on our side — the process table knows each agent's start
+    /// time — so the caller pairs these panes against those processes in the same creation order
+    /// instead of asking about each session alone. Ordered and complete is all that takes; the
+    /// pairing itself is `Jumper`'s job.
+    func tabIndices(forCwd cwd: String, reusingRecentCopy: Bool = true) -> [Int] {
+        withDatabase(reusingRecentCopy: reusingRecentCopy) { tabIndices(in: $0, forCwd: cwd) } ?? []
+    }
+
+    private func withDatabase<T>(reusingRecentCopy: Bool, _ body: (OpaquePointer) -> T?) -> T? {
         guard let copiedDatabaseURL = workingCopy(reusingRecentCopy: reusingRecentCopy) else {
             return nil
         }
@@ -38,7 +57,7 @@ struct WarpTabLocator {
         }
         defer { sqlite3_close(database) }
 
-        return tabIndex(in: database, forCwd: cwd)
+        return body(database)
     }
 
     /// A readable snapshot of Warp's sqlite files. sqlite cannot safely open the live database
@@ -91,7 +110,10 @@ struct WarpTabLocator {
         return copiedDatabaseURL
     }
 
-    private func tabIndex(in database: OpaquePointer, forCwd cwd: String) -> Int? {
+    /// Whether this database still has the tables and columns both queries below read. Warp's
+    /// schema is not ours and can change under us; a missing column means fall back to opening a
+    /// tab, never a crash.
+    private func schemaIsUsable(_ database: OpaquePointer) -> Bool {
         let requiredColumns: [String: Set<String>] = [
             "terminal_panes": ["id", "cwd"],
             "pane_leaves": ["pane_node_id", "kind", "is_focused"],
@@ -99,12 +121,52 @@ struct WarpTabLocator {
             "tabs": ["id", "window_id"]
         ]
         guard let tables = tableNames(in: database),
-              tables.isSuperset(of: requiredColumns.keys) else { return nil }
+              tables.isSuperset(of: requiredColumns.keys) else { return false }
 
         for (table, required) in requiredColumns {
             guard let columns = columns(in: table, database: database),
-                  columns.isSuperset(of: required) else { return nil }
+                  columns.isSuperset(of: required) else { return false }
         }
+        return true
+    }
+
+    /// One tab index per pane at `cwd`, in pane-creation order. Duplicates are kept: two panes in
+    /// one window really can sit in the same tab, and dropping one would shift every later pairing.
+    private func tabIndices(in database: OpaquePointer, forCwd cwd: String) -> [Int]? {
+        guard schemaIsUsable(database) else { return nil }
+
+        let sql = """
+            SELECT (
+                SELECT COUNT(*)
+                FROM tabs t2
+                WHERE t2.window_id = t.window_id AND t2.id <= t.id
+            )
+            FROM tabs t
+            JOIN pane_nodes pn ON pn.tab_id = t.id
+            JOIN pane_leaves pl
+                ON pl.pane_node_id = pn.id AND pl.kind = 'terminal'
+            JOIN terminal_panes tp ON tp.id = pl.pane_node_id
+            WHERE tp.cwd = ?1
+            ORDER BY tp.id ASC
+            """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK,
+              let statement else {
+            sqlite3_finalize(statement)
+            return nil
+        }
+        defer { sqlite3_finalize(statement) }
+        guard bind(cwd, to: statement) else { return nil }
+
+        var indices: [Int] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            indices.append(Int(sqlite3_column_int64(statement, 0)))
+        }
+        return indices
+    }
+
+    private func tabIndex(in database: OpaquePointer, forCwd cwd: String) -> Int? {
+        guard schemaIsUsable(database) else { return nil }
 
         let sql = """
             WITH target AS (
@@ -137,7 +199,15 @@ struct WarpTabLocator {
         }
         defer { sqlite3_finalize(statement) }
 
-        let bindResult = cwd.withCString {
+        guard bind(cwd, to: statement), sqlite3_step(statement) == SQLITE_ROW else { return nil }
+
+        let index = Int(sqlite3_column_int64(statement, 0))
+        return (1...9).contains(index) ? index : nil
+    }
+
+    /// SQLITE_TRANSIENT — sqlite copies the bytes, so the Swift string need not outlive the bind.
+    private func bind(_ text: String, to statement: OpaquePointer) -> Bool {
+        text.withCString {
             sqlite3_bind_text(
                 statement,
                 1,
@@ -145,11 +215,7 @@ struct WarpTabLocator {
                 -1,
                 unsafeBitCast(-1, to: sqlite3_destructor_type.self)
             )
-        }
-        guard bindResult == SQLITE_OK, sqlite3_step(statement) == SQLITE_ROW else { return nil }
-
-        let index = Int(sqlite3_column_int64(statement, 0))
-        return (1...9).contains(index) ? index : nil
+        } == SQLITE_OK
     }
 
     private func tableNames(in database: OpaquePointer) -> Set<String>? {

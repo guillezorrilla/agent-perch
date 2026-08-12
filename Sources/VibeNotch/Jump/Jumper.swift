@@ -89,6 +89,42 @@ final class Jumper: @unchecked Sendable {
         return true
     }
 
+    /// The agent processes sitting in one folder, oldest first — the order Warp created their tabs
+    /// in, as far as anything outside Warp can know it. `startedAt` comes from the same batched
+    /// `ps` the table is built from; pid only breaks ties, to keep the answer stable between
+    /// reconciles when two agents started inside the same second.
+    static func agentsSharingCwd(_ cwd: String, in processes: [ClaudeProcess]) -> [ClaudeProcess] {
+        let wanted = CanonicalPath.canonical(cwd)
+        return processes
+            .filter { CanonicalPath.canonical($0.cwd) == wanted }
+            .sorted {
+                ($0.startedAt ?? .distantPast, $0.pid) < ($1.startedAt ?? .distantPast, $1.pid)
+            }
+    }
+
+    /// Which of the panes at a cwd belongs to `pid`, by pairing the two creation orders.
+    ///
+    /// Warp's database cannot tell two panes in one folder apart — no tty, no pid, identical
+    /// `shell_launch_data` — so every session in a repo used to resolve to the same tab and every
+    /// card focused it (#55). Neither side alone is enough: Warp knows the panes and we know the
+    /// processes. Lining both up by creation order and taking the same position in each is the one
+    /// correspondence available.
+    ///
+    /// A heuristic, and it is wrong when the two orders have diverged — a pane closed and reopened,
+    /// or a session resumed into a different tab. That is why it demands the counts agree first: a
+    /// mismatch means one order has moved and positions no longer mean the same thing, and `nil`
+    /// then sends the caller to a fresh tab rather than to a confidently wrong one. Focusing the
+    /// wrong tab is not a cosmetic miss — the answer path types ⌘Y into whatever it focused.
+    static func pairedWarpTab(pid: Int32?, peers: [ClaudeProcess], tabIndices: [Int]) -> Int? {
+        guard let pid,
+              !tabIndices.isEmpty,
+              peers.count == tabIndices.count,
+              let rank = peers.firstIndex(where: { $0.pid == pid }) else { return nil }
+        let index = tabIndices[rank]
+        // Warp binds ⌘1…⌘9 and nothing beyond, which is the only way this app can focus a tab.
+        return (1...9).contains(index) ? index : nil
+    }
+
     /// The three terminals #4 taught this ladder about, split out of `resolvePlan` the way
     /// `routeWarpJump` already is so the routing can be tested without a live WezTerm, Ghostty or
     /// cmux. `nil` means "not handled here" — the caller carries on down the ladder, so none of
@@ -170,6 +206,28 @@ final class Jumper: @unchecked Sendable {
             // jump would land on a stale index or fall through to a duplicate tab (#23). A
             // refusal by the container is still remembered for the launch, so this never
             // re-prompts.
+            let peers = Self.agentsSharingCwd(session.cwd, in: table)
+            if peers.count > 1 {
+                switch Self.pairedWarpTab(
+                    pid: target.pid,
+                    peers: peers,
+                    tabIndices: warpTabLocator.tabIndices(forCwd: session.cwd, reusingRecentCopy: false)
+                ) {
+                case .some(let index):
+                    return JumpPlan(
+                        target: .warpTab(index),
+                        cwd: session.cwd,
+                        terminal: terminal,
+                        resumeCommand: session.resumeCommand
+                    )
+                case .none:
+                    // Deliberately NOT the cwd query's answer. With peers in the folder that index
+                    // is a tab one of them is sitting in, and focusing it would hand this session's
+                    // ⌘Y to somebody else's prompt. A fresh tab is merely unhelpful (#55).
+                    return .newTab(cwd: session.cwd, terminal: terminal, resumeCommand: session.resumeCommand)
+                }
+            }
+
             guard let index = warpTabLocator.tabIndex(forCwd: session.cwd, reusingRecentCopy: false) else {
                 return .newTab(cwd: session.cwd, terminal: terminal, resumeCommand: session.resumeCommand)
             }
