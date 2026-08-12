@@ -174,7 +174,35 @@ struct CompactSessionRow: View {
 
 struct PermissionRequestCard: View {
     let request: PermissionRequest
+    let onSelect: (Int) -> Void
     let onDecision: (ActionDecision) -> Void
+
+    /// The affirmative half of Claude Code's permission prompt, which has three options where this
+    /// card used to offer two (#61). Only "yes" is spelled the same for every tool; option 2 —
+    /// the one worth having, since it is the difference between answering one card and answering
+    /// ten — is worded per tool, so it is derived from the recorded tool name rather than guessed.
+    ///
+    /// Deny is NOT a third row here on purpose. Typing `3` assumes the prompt has exactly three
+    /// options, which is true for the tools above and not something this app can know in general;
+    /// Escape cancels whatever shape the prompt is. So the digits cover the two "yes" paths and
+    /// the proven Escape path stays where it was, unchanged and untouched by this.
+    static func affirmatives(forTool tool: String) -> [(label: String, description: String)] {
+        [
+            ("Yes", "Just this once"),
+            (rememberLabel(forTool: tool), "Stops this card coming back")
+        ]
+    }
+
+    private static func rememberLabel(forTool tool: String) -> String {
+        switch tool {
+        case "Edit", "MultiEdit", "Write", "NotebookEdit":
+            return "Yes, allow all edits this session"
+        case "Bash":
+            return "Yes, don't ask again for this command"
+        default:
+            return "Yes, and don't ask again"
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 11) {
@@ -218,15 +246,72 @@ struct PermissionRequestCard: View {
                     .background(Color.vibePanel, in: RoundedRectangle(cornerRadius: 9))
             }
 
-            ActionButtons(
-                negativeTitle: "Deny ⌘N",
-                positiveTitle: "Allow ⌘Y",
-                onDecision: onDecision
-            )
+            VStack(spacing: 6) {
+                ForEach(Array(Self.affirmatives(forTool: request.toolName).enumerated()), id: \.offset) { index, option in
+                    affirmativeButton(number: index + 1, option: option)
+                }
+            }
+
+            DenyButton(title: "Deny ⌘N") { onDecision(.deny) }
         }
         .padding(14)
         .background(Color.vibeCard, in: RoundedRectangle(cornerRadius: 16))
         .accessibilityElement(children: .contain)
+    }
+
+    private func affirmativeButton(
+        number: Int,
+        option: (label: String, description: String)
+    ) -> some View {
+        Button { onSelect(number) } label: {
+            HStack(alignment: .top, spacing: 10) {
+                Text("⌘\(number)")
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundStyle(Color.vibeAmber)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(option.label)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.white)
+                    Text(option.description)
+                        .font(.system(size: 10))
+                        .foregroundStyle(Color.vibeGray)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.vibePanel, in: RoundedRectangle(cornerRadius: 9))
+            .contentShape(RoundedRectangle(cornerRadius: 9))
+        }
+        .buttonStyle(.plain)
+        .keyboardShortcut(KeyEquivalent(Character(String(number))), modifiers: .command)
+        .accessibilityLabel("Option \(number): \(option.label)")
+        .firstMouseAction { onSelect(number) }
+    }
+}
+
+/// Deny on its own, because it is the one answer that is NOT a digit: it sends Escape, which
+/// cancels a prompt of any shape (see `PermissionRequestCard.affirmatives`).
+private struct DenyButton: View {
+    let title: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .frame(maxWidth: .infinity)
+                .background(Color.vibePanel, in: Capsule())
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .keyboardShortcut("n", modifiers: .command)
+        .accessibilityLabel(title)
+        .firstMouseAction(action)
     }
 }
 
