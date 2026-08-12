@@ -100,12 +100,50 @@ final class PendingActionResolveTests: XCTestCase {
         XCTAssertNil(request.diff)
     }
 
-    func testUnnamedPermissionShowsTheMessageInsteadOfAGuess() throws {
+    /// The reported case: Claude Code's wording for a Write is a bare "Claude needs your
+    /// permission", with nothing after "to use " to parse. The card used to render that sentence
+    /// and nothing else, so the user pressed ⌘Y without being shown what they were approving.
+    func testUnnamedPermissionShowsTheFileBeingWritten() throws {
+        let action = try XCTUnwrap(PendingAction.resolve(
+            status: .needsAction,
+            notificationMessage: "Claude needs your permission",
+            toolName: "Write",
+            toolInput: .object([
+                "file_path": .string("/tmp/question-demo/answer.txt"),
+                "content": .string("Apple")
+            ])
+        ))
+
+        guard case let .permission(request) = action else {
+            return XCTFail("Expected a permission request")
+        }
+        XCTAssertEqual(request.toolName, "Write")
+        XCTAssertEqual(request.target, "question-demo/answer.txt")
+        XCTAssertNotNil(request.diff, "the content being written is the point of the card")
+    }
+
+    func testUnnamedPermissionAdoptsTheRecordedCall() throws {
         let action = try XCTUnwrap(PendingAction.resolve(
             status: .needsAction,
             notificationMessage: "Permission required for this action",
             toolName: "Bash",
             toolInput: bashInput
+        ))
+
+        guard case let .permission(request) = action else {
+            return XCTFail("Expected a permission request")
+        }
+        XCTAssertEqual(request.toolName, "Bash")
+        XCTAssertEqual(request.target, "grep -n needle Sources")
+    }
+
+    /// Nothing recorded to attribute it to — the message is genuinely all there is.
+    func testUnnamedPermissionWithNothingRecordedStillShowsTheMessage() throws {
+        let action = try XCTUnwrap(PendingAction.resolve(
+            status: .needsAction,
+            notificationMessage: "Permission required for this action",
+            toolName: nil,
+            toolInput: nil
         ))
 
         XCTAssertEqual(action, .permission(PermissionRequest(
