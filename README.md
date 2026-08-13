@@ -122,6 +122,7 @@ Shortcuts work anywhere: the panel doesn't need focus, and neither does the term
 - **Needs-action dwell** — how long an alert holds the panel open (off / 3s / 5s / 10s)
 - **Usage providers** — show only the quotas you care about
 - **Install hooks** — turn on live Claude Code status
+- **Updates** — check daily and tell you when there's a new version. It links to the download rather than replacing itself: swapping the bundle out from under macOS would revoke the Accessibility and app-data grants, and the app would keep showing cards while answers quietly stopped landing
 
 ---
 

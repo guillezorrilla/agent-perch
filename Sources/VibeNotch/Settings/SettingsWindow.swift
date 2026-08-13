@@ -7,6 +7,9 @@ struct SettingsView: View {
     /// re-reading the statuses has to happen on every `show()` — a grant changed in System Settings
     /// while this was closed must not still read as missing (#42).
     @ObservedObject var permissions: AnswerPermissionsModel
+    /// Owned by the app delegate, which also runs its daily loop — this view only reads the
+    /// state and offers the two buttons (#75).
+    @ObservedObject var updates: UpdateChecker
     /// Handed in from `UsageProvider.registeredProviders` rather than listed here, so a sixth
     /// `UsageSource` gets its toggle without touching this file (#39).
     var usageProviders: [String] = []
@@ -95,6 +98,31 @@ struct SettingsView: View {
                 ))
             }
 
+            Section("Updates") {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("Version \(UpdateCheck.currentVersion)")
+                        Text(updates.state.label)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        if let version = updates.state.newVersion {
+                            Button("Download \(version)…") { updates.openReleasesPage() }
+                        } else {
+                            Button("Check now") { updates.checkNow() }
+                                .disabled(updates.state == .checking)
+                        }
+                    }
+                    Toggle("Check for updates automatically", isOn: Binding(
+                        get: { settings.checkForUpdates },
+                        set: { settings.checkForUpdates = $0 }
+                    ))
+                    Text("VibeNotch points you at the download; it never replaces itself. Swapping the app bundle out from under macOS revokes the Accessibility and app-data grants, which would leave cards appearing while answers silently stopped landing — so the last step of an update is yours.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             Section("Codex") {
                 VStack(alignment: .leading, spacing: 4) {
                     Toggle("Show sub-agent sessions", isOn: Binding(
@@ -175,10 +203,10 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .padding(12)
-        // Taller than it was: the Usage section adds a row per provider (#39) and Answering adds
-        // one per permission target (#42). The grouped Form still scrolls, so this only decides
-        // how much is visible without scrolling.
-        .frame(width: 500, height: 720)
+        // Taller than it was: the Usage section adds a row per provider (#39), Answering adds
+        // one per permission target (#42), and Updates adds a fixed two (#75). The grouped Form
+        // still scrolls, so this only decides how much is visible without scrolling.
+        .frame(width: 500, height: 780)
     }
 
     /// The same circle/label/button shape as the "Claude hooks" row above, with the status text
@@ -221,11 +249,13 @@ struct SettingsView: View {
 final class SettingsWindowController {
     private let settings: AppSettings
     private let permissions = AnswerPermissionsModel()
+    private let updates: UpdateChecker
     private let usageProviders: [String]
     private var window: NSWindow?
 
-    init(settings: AppSettings, usageProviders: [String] = []) {
+    init(settings: AppSettings, updates: UpdateChecker, usageProviders: [String] = []) {
         self.settings = settings
+        self.updates = updates
         self.usageProviders = usageProviders
     }
 
@@ -236,7 +266,7 @@ final class SettingsWindowController {
         permissions.refresh()
         if window == nil {
             let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 500, height: 720),
+                contentRect: NSRect(x: 0, y: 0, width: 500, height: 780),
                 styleMask: [.titled, .closable],
                 backing: .buffered,
                 defer: false
@@ -247,6 +277,7 @@ final class SettingsWindowController {
                 rootView: SettingsView(
                     settings: settings,
                     permissions: permissions,
+                    updates: updates,
                     usageProviders: usageProviders
                 )
             )

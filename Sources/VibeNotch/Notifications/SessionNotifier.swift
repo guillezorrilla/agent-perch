@@ -49,6 +49,14 @@ final class SessionNotifier: NSObject, UNUserNotificationCenterDelegate {
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
+        // An app gets exactly one notification-centre delegate, so the update notice (#75) is
+        // routed through this one rather than fighting over it.
+        if let link = response.notification.request.content.userInfo["open_url"] as? String,
+           let url = URL(string: link) {
+            NSWorkspace.shared.open(url)
+            completionHandler()
+            return
+        }
         guard let sessionID = response.notification.request.content.userInfo["session_id"] as? String else {
             completionHandler()
             return
