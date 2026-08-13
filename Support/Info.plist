@@ -8,6 +8,8 @@
     <string>VibeNotch</string>
     <key>CFBundleExecutable</key>
     <string>VibeNotch</string>
+    <key>CFBundleIconFile</key>
+    <string>VibeNotch</string>
     <key>CFBundleIdentifier</key>
     <string>com.gzorrilla.vibenotch</string>
     <key>CFBundleInfoDictionaryVersion</key>

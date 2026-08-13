@@ -1,6 +1,10 @@
 APP := VibeNotch.app
 SWIFT ?= swift
 SWIFT_FLAGS ?=
+# Committed rather than generated at build time: it is derived from artwork, not from code,
+# so rebuilding it on every `make app` would be work that can only produce the same bytes.
+# Regenerate with `make icon` after replacing Support/AppIcon-source.png.
+ICON := Support/VibeNotch.icns
 
 # A STABLE signing identity keeps the Accessibility grant (needed for Warp tab focus)
 # across rebuilds — ad-hoc (`-`) changes every build and macOS revokes the grant each
@@ -32,7 +36,12 @@ VERSION := $(shell /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString
 STAGE := dist/stage
 DMG := dist/VibeNotch-$(VERSION).dmg
 
-.PHONY: app run dmg
+.PHONY: app run dmg icon
+
+# Only after the artwork changes. Not a dependency of `app`: macOS caches icons hard, so a
+# bundle whose .icns is rewritten on every build is a bundle Finder shows stale art for.
+icon:
+	./scripts/make-icon.swift Support/AppIcon-source.png "$(ICON)"
 
 # The bundle is UPDATED IN PLACE, never deleted and recreated. macOS books TCC grants
 # against the app bundle, so `rm -rf` on the .app threw away "access data from other apps"
@@ -48,6 +57,8 @@ app:
 	rm -f -- "$(APP)/Contents/MacOS/VibeNotch"
 	cp ".build/release/VibeNotch" "$(APP)/Contents/MacOS/VibeNotch"
 	cp "Support/Info.plist" "$(APP)/Contents/Info.plist"
+	mkdir -p "$(APP)/Contents/Resources"
+	cp "$(ICON)" "$(APP)/Contents/Resources/VibeNotch.icns"
 	@echo "Signing with identity: $(SIGN_ID)"
 	codesign --force -s "$(SIGN_ID)" "$(APP)"
 
@@ -70,12 +81,13 @@ dmg:
 	$(SWIFT) build -c release $(SWIFT_FLAGS)
 	rm -rf "$(STAGE)"
 	mkdir -p "$(STAGE)/$(APP)/Contents/MacOS"
-	@# Empty, but not optional: codesign seals a resource envelope regardless, and
+	@# Must exist even when empty: codesign seals a resource envelope regardless, and
 	@# `--verify --strict` then rejects the bundle with "code has no resources but signature
 	@# indicates they must be present". Notarization applies the same strictness.
 	mkdir -p "$(STAGE)/$(APP)/Contents/Resources"
 	cp ".build/release/VibeNotch" "$(STAGE)/$(APP)/Contents/MacOS/VibeNotch"
 	cp "Support/Info.plist" "$(STAGE)/$(APP)/Contents/Info.plist"
+	cp "$(ICON)" "$(STAGE)/$(APP)/Contents/Resources/VibeNotch.icns"
 	codesign --force --options runtime --timestamp \
 		--entitlements "Support/VibeNotch.entitlements" \
 		-s "$(DEVELOPER_ID)" "$(STAGE)/$(APP)"
