@@ -67,6 +67,7 @@ final class AppSettings: ObservableObject {
     @AppStorage("screenChoice") private var storedScreenChoice: ScreenChoice = .activeDisplay
     @AppStorage("launchAtLogin") private var storedLaunchAtLogin = false
     @AppStorage("soundsEnabled") private var storedSoundsEnabled = true
+    @AppStorage("checkForUpdates") private var storedCheckForUpdates = true
     @AppStorage("panelWidth") private var storedPanelWidth = 500.0
     @AppStorage("needsActionDwellTime") private var storedDwellTime = NeedsActionDwellTime.fiveSeconds
     // Keyed identically to what `CodexSessionSource`'s default `showSubAgentSessions` closure
@@ -137,6 +138,15 @@ final class AppSettings: ObservableObject {
             guard newValue != storedSoundsEnabled else { return }
             objectWillChange.send()
             storedSoundsEnabled = newValue
+        }
+    }
+
+    var checkForUpdates: Bool {
+        get { storedCheckForUpdates }
+        set {
+            guard newValue != storedCheckForUpdates else { return }
+            objectWillChange.send()
+            storedCheckForUpdates = newValue
         }
     }
 
