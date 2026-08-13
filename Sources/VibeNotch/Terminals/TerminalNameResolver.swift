@@ -85,18 +85,11 @@ final class TerminalNameResolver: @unchecked Sendable {
         lock.withLock { cache[pid] = name }
     }
 
+    /// The recognition rules now live on each terminal's row in `TerminalRegistry`, alongside its
+    /// focus and reopen strategies, so the spelling this emits cannot drift from the spelling the
+    /// jump and answer paths match on.
     private static func knownName(for command: String) -> String? {
-        let lowercased = command.lowercased()
-        let executable = URL(fileURLWithPath: command).lastPathComponent.lowercased()
-        if lowercased.contains("iterm2") { return "iTerm" }
-        if lowercased.contains("apple_terminal") || executable == "terminal" { return "Terminal" }
-        if lowercased.contains("warpterminal") || lowercased.contains("warp.app/") { return "Warp" }
-        if lowercased.contains("tmux") && lowercased.contains("server") { return "tmux" }
-        if lowercased.contains("ghostty") { return "Ghostty" }
-        if lowercased.contains("wezterm") { return "WezTerm" }
-        if executable == "kitty" || lowercased.contains("kitty.app/") { return "Kitty" }
-        if executable == "cmux" || lowercased.contains("cmux.app/") { return "cmux" }
-        return nil
+        TerminalRegistry.recognise(command: command)
     }
 
     @Sendable

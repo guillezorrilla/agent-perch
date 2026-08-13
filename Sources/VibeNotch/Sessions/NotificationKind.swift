@@ -74,13 +74,11 @@ enum NotificationOutcome: Equatable, Sendable {
     ) -> NotificationOutcome {
         if case .permission = NotificationKind.classify(message) { return .needsAction }
 
-        // `AskUserQuestion` and `ExitPlanMode` block on the user by definition — the tool call IS
-        // the wait — so the idle wording that accompanies one is the truth about it (#14).
-        switch PendingAction.parse(toolName: pendingToolName, input: pendingToolInput) {
-        case .some(.question), .some(.plan):
+        // The idle wording that accompanies a self-blocking tool call is the truth about it (#14).
+        // `blocksOnItsOwn` is the shared answer — this used to be a copy of the switch in
+        // `PendingAction.resolve`, kept in agreement by hand.
+        if PendingAction.parse(toolName: pendingToolName, input: pendingToolInput)?.blocksOnItsOwn == true {
             return .needsAction
-        case .some(.permission), .none:
-            break
         }
 
         switch currentStatus {

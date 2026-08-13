@@ -485,6 +485,15 @@ struct CodexCredentials: Equatable {
 
 protocol CodexTokenSource: Sendable {
     func credentials() -> CodexCredentials?
+    /// Why `credentials()` came back empty — the distinction between "never logged in" and "could
+    /// not read it this time". Defaults to the former, which is what an in-memory stub means.
+    func credentialAvailability() -> UsageAvailability
+}
+
+extension CodexTokenSource {
+    func credentialAvailability() -> UsageAvailability {
+        credentials() != nil ? .ready : .notConfigured
+    }
 }
 
 enum CodexCredentialParser {
@@ -527,6 +536,12 @@ struct RuntimeCodexTokenSource: CodexTokenSource {
     func credentials() -> CodexCredentials? {
         guard let data = try? Data(contentsOf: authURL) else { return nil }
         return try? CodexCredentialParser.credentials(from: data)
+    }
+
+    /// A transient read failure here used to be indistinguishable from a missing file, which
+    /// dropped the Codex row entirely — the bug #56 fixed for Claude and nowhere else.
+    func credentialAvailability() -> UsageAvailability {
+        CredentialFile.availability(of: authURL) { try? CodexCredentialParser.credentials(from: $0) }
     }
 }
 
@@ -602,6 +617,12 @@ struct CodexUsageSource: UsageSource {
 
     func isAvailable() -> Bool {
         tokenSource.credentials() != nil
+    }
+
+    /// Without this the default implementation applied, turning every failed credential read into
+    /// `.notConfigured` and omitting the row rather than offering a retry.
+    func availability() async -> UsageAvailability {
+        tokenSource.credentialAvailability()
     }
 
     func fetch() async throws -> ProviderUsage {

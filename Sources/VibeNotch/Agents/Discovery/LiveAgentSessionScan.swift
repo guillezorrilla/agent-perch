@@ -32,32 +32,15 @@ struct LiveAgentProcess: Equatable, Sendable {
 /// snapshot every source and every click already share (#23), so first-class process discovery
 /// costs no additional subprocess call at all.
 enum LiveAgentScan {
-    /// Executable BASENAME -> agent, for the agents whose sessions can only be found this way.
-    /// Claude is deliberately absent: its hooks report a session (and its tty) from inside the
-    /// terminal it runs in, which is strictly better evidence than a process listing.
-    static let agentsByExecutableName: [String: String] = [
-        "codex": "Codex",
-        "agy": "Antigravity",
-        "antigravity": "Antigravity",
-        "gemini": "Gemini",
-        "opencode": "OpenCode",
-        "kiro": "Kiro",
-        "kiro-cli": "Kiro"
-    ]
+    /// Executable BASENAME -> agent, and the script markers for agents the basename lookup
+    /// cannot see. Both derived from `AgentRegistry` rather than restated: an agent missing from
+    /// here was invisible, with no row and no error, and nothing tied this table to the four
+    /// others keyed on the same name.
+    static var agentsByExecutableName: [String: String] { AgentRegistry.agentsByExecutableName }
 
-    /// Agents whose launcher is a SCRIPT, not a binary — the process table shows an INTERPRETER as
-    /// argv[0], so the basename lookup above cannot see them at all. Homebrew's `gemini` is exactly
-    /// this: `file` calls it "a node script text executable", so a live session appears as
-    /// `node …/gemini-cli/…/libexec/bin/gemini` (#11).
-    ///
-    /// Matched against argv[1] ONLY, never the whole command line: `claude --mcp-config
-    /// …/gemini-cli/…` would otherwise be misread as a Gemini session, since Claude is deliberately
-    /// absent from the basename map above and would fall through to here.
-    static let agentsByScriptMarker: [(marker: String, agentName: String)] = [
-        ("/gemini-cli/", "Gemini"),
-        ("/bin/gemini", "Gemini"),
-        ("/.opencode/bin/", "OpenCode")
-    ]
+    static var agentsByScriptMarker: [(marker: String, agentName: String)] {
+        AgentRegistry.agentsByScriptMarker
+    }
 
     /// Lowercased command-line markers that mean "this is not a user's CLI session" even though
     /// the executable's basename matches an agent exactly.

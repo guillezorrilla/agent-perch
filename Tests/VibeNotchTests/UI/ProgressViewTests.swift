@@ -671,9 +671,9 @@ final class PlanMarkdownTests: XCTestCase {
 
     /// The card types these digits into Claude Code's own plan prompt, so the order is a contract.
     func testTheCardOffersThePlanPromptsThreeRealChoices() {
-        XCTAssertEqual(PlanReviewCard.options.count, 3)
-        XCTAssertEqual(PlanReviewCard.options[0].label, "Yes, and use auto mode")
-        XCTAssertEqual(PlanReviewCard.options[1].label, "Yes, manually approve edits")
-        XCTAssertEqual(PlanReviewCard.options[2].label, "Tell Claude what to change")
+        XCTAssertEqual(PendingAction.planOptions.count, 3)
+        XCTAssertEqual(PendingAction.planOptions[0].label, "Yes, and use auto mode")
+        XCTAssertEqual(PendingAction.planOptions[1].label, "Yes, manually approve edits")
+        XCTAssertEqual(PendingAction.planOptions[2].label, "Tell Claude what to change")
     }
 }
