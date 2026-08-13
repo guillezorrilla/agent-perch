@@ -59,12 +59,21 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         self.openSettings = openSettings
         super.init()
 
-        // The app icon's mark — a ring around a filled centre — rather than generic sparkles.
-        // An SF Symbol instead of a bundled asset because it is already a template image, so
+        // Two speech bubbles: several agents, each with something to say to you. That is what
+        // the app is for, so it is what the menu bar shows.
+        //
+        // An SF Symbol rather than a bundled asset because it is already a template image, so
         // macOS inverts it for a light or dark menu bar without a second copy of the artwork,
-        // and it stays sharp on any display. `circle.inset.filled` is the closest match to the
-        // icon at 18pt; the alternatives put too small a dot in the middle to read.
-        statusItem.button?.image = NSImage(systemSymbolName: "circle.inset.filled", accessibilityDescription: "VibeNotch")
+        // and it stays sharp on any display.
+        //
+        // Two glyphs were rejected here for reasons that are not obvious until you render them
+        // at 18pt: `circle.inset.filled` echoes the app icon's ring but reads as a record
+        // button, and the notch silhouette itself — the obvious choice — collapses into a
+        // briefcase, because a notch cutout needs more pixels than a menu bar has.
+        statusItem.button?.image = NSImage(
+            systemSymbolName: "bubble.left.and.bubble.right.fill",
+            accessibilityDescription: "VibeNotch"
+        )
         statusItem.button?.toolTip = "VibeNotch"
 
         let menu = NSMenu()
