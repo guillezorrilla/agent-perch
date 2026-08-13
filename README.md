@@ -58,6 +58,17 @@ Click any card and the terminal running it comes to the front — the right wind
 
 Requires **macOS 14+** on Apple Silicon.
 
+### **[Download VibeNotch.dmg →](https://github.com/guillezorrilla/vibe-notch/releases/latest)**
+
+Open it, drag VibeNotch to Applications, launch it. The build is signed and notarized, so there's no right-click dance and no "damaged and can't be opened".
+
+That's it. There's no installer and no dock icon — VibeNotch lives in the notch. Quit it from **Settings → Quit**.
+
+<details>
+<summary>Or build it yourself</summary>
+
+Needs Xcode and a Swift 6 toolchain.
+
 ```sh
 git clone https://github.com/guillezorrilla/vibe-notch.git
 cd vibe-notch
@@ -65,7 +76,7 @@ make app
 open VibeNotch.app
 ```
 
-That's it. There's no installer and no dock icon — VibeNotch lives in the notch. Quit it from **Settings → Quit**.
+</details>
 
 On first launch macOS will ask for two things:
 
