@@ -53,7 +53,8 @@ final class ReopenLadderTests: XCTestCase {
         launcher: RecordingLauncher = RecordingLauncher(),
         openedURLs: URLRecorder = URLRecorder(),
         installed: Set<String> = ["com.googlecode.iterm2", "com.apple.Terminal",
-                                  "dev.warp.Warp-Stable", "com.mitchellh.ghostty"]
+                                  "dev.warp.Warp-Stable", "com.mitchellh.ghostty",
+                                  "com.github.wez.wezterm"]
     ) -> Jumper {
         Jumper(
             appleScript: script,
@@ -105,9 +106,38 @@ final class ReopenLadderTests: XCTestCase {
         let launcher = RecordingLauncher()
         reopen("wezterm", with: jumper(script: script, launcher: launcher))
 
-        XCTAssertEqual(launcher.launches[0].executable, "/usr/bin/env")
-        XCTAssertEqual(launcher.launches[0].arguments, ["wezterm", "start", "--cwd", "/repo"])
+        XCTAssertEqual(launcher.launches.count, 1)
+        XCTAssertTrue(launcher.launches[0].executable.hasSuffix("Contents/MacOS/wezterm"))
+        XCTAssertEqual(launcher.launches[0].arguments, ["start", "--cwd", "/repo"])
         XCTAssertTrue(script.sources.isEmpty)
+    }
+
+    /// Addressed through `/usr/bin/env wezterm` this reported success and stopped the ladder even
+    /// with no WezTerm installed: `env` launches fine and only *then* exits 127, long after
+    /// `runDetached` has said the launch was accepted. Nothing opened, and the user got no window
+    /// at all rather than a fallback one.
+    func testWezTermFallsBackToTheGenericLadderWhenItIsNotInstalled() {
+        let script = RecordingAppleScript()
+        let launcher = RecordingLauncher()
+        reopen("wezterm", with: jumper(script: script, launcher: launcher, installed: ["com.googlecode.iterm2"]))
+
+        XCTAssertTrue(launcher.launches.isEmpty, "nothing should be launched for an absent WezTerm")
+        XCTAssertEqual(script.sources.count, 1)
+        XCTAssertTrue(script.sources[0].contains("com.googlecode.iterm2"))
+    }
+
+    /// The same trap, checked for every terminal that reopens by launching something: a reopen may
+    /// only claim the jump when it has actually found the app to launch.
+    func testNoReopenClaimsSuccessWithoutAnInstalledApp() {
+        for terminal in ["ghostty", "wezterm"] {
+            let launcher = RecordingLauncher()
+            let jumper = jumper(launcher: launcher, installed: [])
+            let handled = jumper.perform(
+                JumpPlan(target: .newTab, cwd: "/repo", terminal: terminal, resumeCommand: nil)
+            )
+            XCTAssertTrue(launcher.launches.isEmpty, "\(terminal) launched something that is not there")
+            XCTAssertFalse(handled, "\(terminal) claimed a jump it did not make")
+        }
     }
 
     /// Ghostty not being installed is the one case where landing in iTerm is genuinely right.

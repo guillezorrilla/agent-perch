@@ -551,12 +551,17 @@ final class Jumper: @unchecked Sendable {
             )
 
         case .wezTermCLI:
-            // Via `env` so it resolves on the user's PATH the way a typed command would.
-            var arguments = ["wezterm", "start", "--cwd", cwd]
+            // The CLI inside the bundle, NOT `/usr/bin/env wezterm`. `runDetached` reports whether
+            // the launch was accepted, and `env` always launches — it exits 127 for a missing
+            // command long after we have said "handled" and stopped the ladder. Addressing the
+            // binary directly makes a missing WezTerm a failed `run()`, so the ladder carries on
+            // exactly as it did before WezTerm had a reopen arm at all.
+            guard let bundle = installedBundle(capability) else { return false }
+            var arguments = ["start", "--cwd", cwd]
             if let resumeCommand {
                 arguments += ["--", "/bin/zsh", "-lc", Self.newTabInnerCommand(cwd: cwd, resumeCommand: resumeCommand)]
             }
-            return launch("/usr/bin/env", arguments)
+            return launch(bundle.appendingPathComponent("Contents/MacOS/wezterm").path, arguments)
 
         case .activateApp:
             // No new-window mechanism, but surfacing the app the session actually lives in beats
