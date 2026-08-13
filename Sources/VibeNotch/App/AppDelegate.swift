@@ -12,6 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let actionInjector = ActionInjector()
     private let hoverController = NotchHoverController()
     private let cardShortcuts = CardShortcutMonitor()
+    private var updateChecker: UpdateChecker?
     private var sessionsWatcher: PathWatcher?
     private var spoolWatcher: SpoolWatcher?
     private var notch: DynamicNotch<NotchContentView, CompactLeadingView, CompactTrailingView>?
@@ -113,8 +114,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         spoolWatcher?.start()
 
+        // Reads the toggle on every pass rather than capturing it, so switching the setting off
+        // stops the next daily check instead of only the next launch.
+        let updateChecker = UpdateChecker(isEnabled: { [weak settings] in
+            settings?.checkForUpdates ?? false
+        })
+        self.updateChecker = updateChecker
+        updateChecker.start()
+
         let settingsWindow = SettingsWindowController(
             settings: settings,
+            updates: updateChecker,
             usageProviders: usageProvider.registeredProviders
         )
         self.settingsWindow = settingsWindow
@@ -137,6 +147,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NotificationCenter.default.removeObserver(self)
         sessionsWatcher?.stop()
         spoolWatcher?.stop()
+        updateChecker?.stop()
         hoverController.stop()
         cardShortcuts.stop()
     }
