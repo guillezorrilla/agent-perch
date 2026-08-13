@@ -5,3 +5,10 @@
 xcuserdata/
 DerivedData/
 dist/
+
+# Signing material. Never in the repo — a Developer ID .p12 is the private key that
+# lets anyone ship software as you, and this repo is public. It lives in the login
+# keychain and in the DEVELOPER_ID_P12 repo secret; a copy on disk is a copy too many.
+*.p12
+*.pem
+*.mobileprovision
