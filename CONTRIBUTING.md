@@ -48,6 +48,27 @@ evidence makes this true, and what happens when that evidence is missing?*
 - **Comments explain why, not what.** The existing ones reference issue numbers
   so a future reader can find the failure that motivated the code. Keep that up.
 
+## Cutting a release
+
+Push a tag; the rest is automatic.
+
+```sh
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+`.github/workflows/release.yml` runs the tests, imports the Developer ID cert into
+a throwaway keychain, stamps the version *from the tag* into `Support/Info.plist`,
+runs `make dmg`, and attaches the notarized DMG to the GitHub Release.
+
+The tag is the only place a version number is authored. Don't hand-edit
+`CFBundleShortVersionString` — the workflow overwrites it, and the update check
+compares the tag against whatever the shipped bundle actually carries.
+
+Five repo secrets feed it: `DEVELOPER_ID_P12` (base64 of the exported `.p12`),
+`DEVELOPER_ID_P12_PASSWORD`, `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD`.
+The certificate expires **2027-02-01**; renewing it means a new export and two
+updated secrets, no code change.
+
 ## Labels
 
 Issues carry an `area:` label matching where the work lives — `jump`, `answer`,
