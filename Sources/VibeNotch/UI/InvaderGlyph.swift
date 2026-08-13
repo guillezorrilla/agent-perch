@@ -12,6 +12,13 @@ extension Color {
 
 /// The pixel invader, in the two poses the arcade original alternates between (#53).
 ///
+/// Everything static here is `nonisolated` on purpose. `InvaderGlyph` conforms to `View`, which
+/// makes the type `@MainActor`, which would otherwise drag a handful of pure constants and two
+/// pure functions onto the main actor with it — and the tests, which touch only those and
+/// nothing about SwiftUI's rendering, could not reach them. Whether that is an error depends on
+/// the toolchain: Swift 6.3 lets it pass, the Swift on GitHub's macos-15 runner does not, so it
+/// compiled locally and failed in CI. Stating the isolation removes the disagreement.
+///
 /// Space Invaders animates its aliens by swapping between two sprites on a fixed beat rather than
 /// by moving anything — which is both the authentic reference and the cheapest thing that could
 /// work here: one extra grid, one phase toggle, no per-pixel animation and no dependency.
@@ -27,13 +34,13 @@ struct InvaderGlyph: View {
     /// 0.1s and closes the panel after a two-tick exit grace, and hover is flaky enough already
     /// (#49), so this must not put real work on the main runloop. Two and a half swaps a second
     /// reads as "alive" and costs one tiny `Canvas` redraw each.
-    static let beat: TimeInterval = 0.4
+    nonisolated static let beat: TimeInterval = 0.4
 
     /// The glyph's fixed grid. Both frames below are exactly this size, which is what keeps the
     /// animation from shifting layout: the `Canvas` divides a fixed 11×8 frame by these, so no
     /// pose can change the glyph's bounds or the card's height (#53).
-    static let columns = 11
-    static let rows = 8
+    nonisolated static let columns = 11
+    nonisolated static let rows = 8
 
     enum Frame: Equatable {
         /// The pose a still — not working — invader always holds.
@@ -43,7 +50,7 @@ struct InvaderGlyph: View {
 
     /// Arms down: the sprite this glyph has always drawn, kept as the resting pose so a session
     /// that is not working looks exactly like it did before #53.
-    static let restPixels = [
+    nonisolated static let restPixels = [
         [false, false, true,  false, false, false, false, false, true,  false, false],
         [false, false, false, true,  false, false, false, true,  false, false, false],
         [false, false, true,  true,  true,  true,  true,  true,  true,  false, false],
@@ -56,7 +63,7 @@ struct InvaderGlyph: View {
 
     /// Arms up: the arcade's second frame for the same alien. Same 11×8 box, every limb moved
     /// within it — that is the whole trick, and why the card cannot jitter.
-    static let stepPixels = [
+    nonisolated static let stepPixels = [
         [false, false, true,  false, false, false, false, false, true,  false, false],
         [true,  false, false, true,  false, false, false, true,  false, false, true ],
         [true,  false, true,  true,  true,  true,  true,  true,  true,  false, true ],
@@ -70,7 +77,7 @@ struct InvaderGlyph: View {
     /// The entire animation, as a pure function of the two things that decide it. A session that
     /// is not working is pinned to `.rest`, so the glyph stops on a real pose rather than wherever
     /// the beat happened to leave it (#53).
-    static func frame(isWorking: Bool, phase: Int) -> Frame {
+    nonisolated static func frame(isWorking: Bool, phase: Int) -> Frame {
         guard isWorking else { return .rest }
         return phase.isMultiple(of: 2) ? .rest : .step
     }
@@ -78,7 +85,7 @@ struct InvaderGlyph: View {
     /// Which beat an instant falls in. Derived from the clock rather than counted in view state,
     /// so the pose survives the panel being torn down and rebuilt on every expand, and so two
     /// working cards march together instead of each keeping its own count.
-    static func phase(at date: Date) -> Int {
+    nonisolated static func phase(at date: Date) -> Int {
         Int((date.timeIntervalSinceReferenceDate / beat).rounded(.down))
     }
 
