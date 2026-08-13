@@ -79,5 +79,11 @@ Categories: `jump`, `answer`, `hover`, `usage-credentials`.
   identity and updates the bundle *in place*. Ad-hoc signing, or deleting the
   `.app` and recreating it, throws away the Accessibility and app-data grants
   the jump and answer paths depend on.
+- **Releases are a different target.** `make dmg DEVELOPER_ID=… NOTARY_PROFILE=…`
+  builds a *separate* bundle under `dist/`, signs it with the hardened runtime
+  and notarizes it. It never touches your local `VibeNotch.app`, and it refuses
+  to run rather than fall back to the development cert — that cert produces a
+  DMG that fails Gatekeeper on every Mac but yours. Verify each release on a
+  machine that has never run VibeNotch; quarantine is only set on downloads.
 - **Hooks run detached.** A hook process has no controlling terminal, so it
   finds one by walking its parents. Don't assume `$$` has a tty.
