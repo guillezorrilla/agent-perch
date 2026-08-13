@@ -142,21 +142,27 @@ struct JumpPlan: Equatable, Sendable {
         case ghostty
         case cmux
 
-        var bundleIdentifier: String {
-            switch self {
-            case .ghostty: return "com.mitchellh.ghostty"
-            case .cmux: return "com.cmuxterm.app"
-            }
-        }
+        /// Both facts below now come off this terminal's row in `TerminalRegistry` rather than
+        /// being restated here — this enum was one of the six tables keyed on the same string.
+        /// `TerminalRegistryTests` pins that every case has a row, so the fallbacks cannot go
+        /// quietly wrong.
+        private var capability: TerminalCapability? { TerminalRegistry.capability(for: rawValue) }
+
+        var bundleIdentifier: String { capability?.bundleIdentifiers.first ?? "" }
 
         /// Whether failing to find a matching surface still counts as a handled jump.
         ///
         /// cmux keeps the floor it has had since #3: bring cmux itself to the front. Letting a
         /// miss fall through to `openNewTab` would surface an *iTerm* window instead of the cmux
-        /// app the session actually lives in — a regression, not a fallback. Ghostty never had
-        /// that floor and reopening at the cwd is a reasonable answer there, so its miss stays a
-        /// miss and the existing ladder fires.
-        var activatesOnMiss: Bool { self == .cmux }
+        /// app the session actually lives in — a regression, not a fallback.
+        ///
+        /// Ghostty never had that floor, and it is why the Ghostty reopen bug went unnoticed: its
+        /// miss fell through to a ladder that had no Ghostty arm. It now reopens in Ghostty, so a
+        /// miss reaching the ladder is finally the reasonable answer this comment always claimed.
+        var activatesOnMiss: Bool {
+            guard case let .cwdSurface(activates) = capability?.focus else { return false }
+            return activates
+        }
     }
 
     /// A GUI IDE whose "session" is a workspace FOLDER rather than a terminal, so a jump opens the

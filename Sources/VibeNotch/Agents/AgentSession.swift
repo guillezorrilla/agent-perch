@@ -76,19 +76,7 @@ extension AgentSession {
     /// `SessionLayout` must never promote one to a full card (#29). Static as well as instance,
     /// because `reconcile` asks it while BUILDING an `AgentSession` and so has only the two fields.
     static func workspaceIDE(agentName: String, sessionId: String) -> JumpPlan.WorkspaceIDE? {
-        switch agentName {
-        // Antigravity's real `agy` CLI sessions deliberately share `agentName` with its
-        // IDE-workspace rows (one Settings toggle, one pill) and are told apart by the session-id
-        // prefix — a CLI session is NOT a workspace and takes the normal ladder (#29).
-        case "Antigravity":
-            return AntigravitySessionSource.isWorkspaceSessionId(sessionId) ? .antigravity : nil
-        // Cursor has no CLI-session counterpart in this app, so every row from its source is a
-        // workspace; the prefix check is still the same shape so the two cannot drift (#11).
-        case "Cursor":
-            return CursorSessionSource.isWorkspaceSessionId(sessionId) ? .cursor : nil
-        default:
-            return nil
-        }
+        AgentRegistry.workspaceIDE(agentName: agentName, sessionId: sessionId)
     }
 
     var workspaceIDE: JumpPlan.WorkspaceIDE? {

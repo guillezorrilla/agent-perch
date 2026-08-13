@@ -140,16 +140,12 @@ struct NotchContentView: View {
         case let .permission(request):
             PermissionRequestCard(
                 request: request,
-                onSelect: { option in
-                    let affirmatives = PermissionRequestCard.affirmatives(forTool: request.toolName)
-                    guard affirmatives.indices.contains(option - 1) else { return }
-                    respond(option: option, in: session, label: affirmatives[option - 1].label)
-                },
+                onSelect: { option in answer(option: option, of: pending, in: session) },
                 onDecision: { decision in respond(decision, to: session) }
             )
         case let .plan(markdown):
             PlanReviewCard(markdown: markdown) { option in
-                respond(option: option, in: session, label: PlanReviewCard.options[option - 1].label)
+                answer(option: option, of: pending, in: session)
             }
         case let .question(prompt):
             QuestionPromptCard(prompt: prompt) { option in
@@ -164,31 +160,33 @@ struct NotchContentView: View {
     private func handleShortcut(_ shortcut: CardShortcut) {
         guard let (session, pending) = topmostPendingCard else { return }
 
-        switch (pending, shortcut) {
-        case let (.question(prompt), .option(number)):
-            respond(number, to: prompt, in: session)
-        case (.question, _):
-            // A question has numbered answers only — allow/deny would be a guess.
-            return
-        case let (.plan, .option(number)):
-            guard PlanReviewCard.options.indices.contains(number - 1) else { return }
-            respond(option: number, in: session, label: PlanReviewCard.options[number - 1].label)
-        case (.plan, _):
-            // ⌘Y used to type a `1` here, and `1` on the plan prompt is AUTO MODE — the one
-            // choice a user pressing "Approve" is least likely to have meant (#66). The plan
-            // card names its three real options; nothing else answers it.
-            return
-        case let (.permission(request), .option(number)):
-            let affirmatives = PermissionRequestCard.affirmatives(forTool: request.toolName)
-            guard affirmatives.indices.contains(number - 1) else { return }
-            respond(option: number, in: session, label: affirmatives[number - 1].label)
-        case (_, .allow):
+        switch shortcut {
+        case let .option(number):
+            answer(option: number, of: pending, in: session)
+        case .allow:
+            guard pending.acceptsAllowDeny else { return }
             respond(.allow, to: session)
-        case (_, .deny):
+        case .deny:
+            guard pending.acceptsAllowDeny else { return }
             respond(.deny, to: session)
-        case let (_, .option(number)):
-            respond(option: number, in: session)
         }
+    }
+
+    /// The one place a numbered choice is turned into an answer, shared by the card's own buttons
+    /// and by the keyboard monitor.
+    ///
+    /// These were two switches over the same enum in two methods, with the bounds check written
+    /// out twice and — in `pendingCard`'s plan arm — not at all. Whether a number is on offer, and
+    /// what pressing it means, is now `PendingAction`'s answer alone, so the card cannot show one
+    /// set of options while the keyboard honours another.
+    private func answer(option: Int, of pending: PendingAction, in session: AgentSession) {
+        if case let .question(prompt) = pending {
+            // A question's choices come from the prompt and are answered through it, by index.
+            respond(option, to: prompt, in: session)
+            return
+        }
+        guard let label = pending.optionLabel(option) else { return }
+        respond(option: option, in: session, label: label)
     }
 
     private func respond(_ decision: ActionDecision, to session: AgentSession) {
@@ -424,14 +422,7 @@ struct UsageStripView: View {
     }
 
     private func glyph(for provider: String) -> String {
-        switch provider {
-        case "Claude": "✦"
-        case "Codex": "◆"
-        case "Antigravity": "▲"
-        case "Gemini": "✧"
-        case "Kiro": "◈"
-        default: "●"
-        }
+        AgentRegistry.glyph(for: provider)
     }
 
     private func color(for level: UsageLevel) -> Color {

@@ -59,15 +59,15 @@ final class PermissionAffirmativeTests: XCTestCase {
     /// tool name beats printing one guess for everything.
     func testTheRememberOptionIsWordedForTheToolBeingApproved() {
         XCTAssertEqual(
-            PermissionRequestCard.affirmatives(forTool: "Write")[1].label,
+            PendingAction.permissionAffirmatives(forTool: "Write")[1].label,
             "Yes, allow all edits this session"
         )
         XCTAssertEqual(
-            PermissionRequestCard.affirmatives(forTool: "Edit")[1].label,
+            PendingAction.permissionAffirmatives(forTool: "Edit")[1].label,
             "Yes, allow all edits this session"
         )
         XCTAssertEqual(
-            PermissionRequestCard.affirmatives(forTool: "Bash")[1].label,
+            PendingAction.permissionAffirmatives(forTool: "Bash")[1].label,
             "Yes, don't ask again for this command"
         )
     }
@@ -75,10 +75,10 @@ final class PermissionAffirmativeTests: XCTestCase {
     /// An unrecognised tool still gets a truthful label rather than an edit-specific one.
     func testAnUnknownToolFallsBackToNeutralWording() {
         XCTAssertEqual(
-            PermissionRequestCard.affirmatives(forTool: "mcp__ide__getDiagnostics")[1].label,
+            PendingAction.permissionAffirmatives(forTool: "mcp__ide__getDiagnostics")[1].label,
             "Yes, and don't ask again"
         )
-        XCTAssertEqual(PermissionRequestCard.affirmatives(forTool: "")[1].label, "Yes, and don't ask again")
+        XCTAssertEqual(PendingAction.permissionAffirmatives(forTool: "")[1].label, "Yes, and don't ask again")
     }
 
     /// Exactly two digits are offered. Deny is Escape, not a `3`: typing 3 would assume the prompt
@@ -86,8 +86,8 @@ final class PermissionAffirmativeTests: XCTestCase {
     /// shape of prompt.
     func testOnlyTheTwoAffirmativesAreDigits() {
         for tool in ["Write", "Bash", "Edit", "", "mcp__x__y"] {
-            XCTAssertEqual(PermissionRequestCard.affirmatives(forTool: tool).count, 2, tool)
-            XCTAssertEqual(PermissionRequestCard.affirmatives(forTool: tool)[0].label, "Yes", tool)
+            XCTAssertEqual(PendingAction.permissionAffirmatives(forTool: tool).count, 2, tool)
+            XCTAssertEqual(PendingAction.permissionAffirmatives(forTool: tool)[0].label, "Yes", tool)
         }
     }
 }

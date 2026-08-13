@@ -63,8 +63,26 @@ final class JumpLadderTests: XCTestCase {
         XCTAssertEqual(Jumper.openerOrder(preferring: "warp"), ["warp", "iterm", "terminal"])
         XCTAssertEqual(Jumper.openerOrder(preferring: "terminal.app"), ["terminal", "iterm", "warp"])
         XCTAssertEqual(Jumper.openerOrder(preferring: "iterm2"), ["iterm", "terminal", "warp"])
-        // Unknown/unsupported terminal or no detection → stable default order.
-        XCTAssertEqual(Jumper.openerOrder(preferring: "ghostty"), ["iterm", "terminal", "warp"])
+    }
+
+    /// Ghostty and WezTerm can reopen themselves, and this used to deny it.
+    ///
+    /// `openerOrder` guarded on a hardcoded `["iterm", "terminal", "warp"]` and returned that list
+    /// unchanged for anything absent from it, so a dead Ghostty session opened an **iTerm** window
+    /// — the outcome `JumpPlan.CwdFocusApp.activatesOnMiss` calls "a regression, not a fallback".
+    /// The old version of this test asserted that behavior, filed under "unsupported terminal".
+    func testTerminalsThatCanReopenThemselvesComeFirst() {
+        XCTAssertEqual(Jumper.openerOrder(preferring: "ghostty"), ["ghostty", "iterm", "terminal", "warp"])
+        XCTAssertEqual(Jumper.openerOrder(preferring: "wezterm"), ["wezterm", "iterm", "terminal", "warp"])
+    }
+
+    /// The distinction the flat list could not express: a terminal we *know about* but that has no
+    /// way to open a window at a cwd falls back, and so does one we have never heard of. Both end
+    /// at the generic ladder, but only the first is a recorded decision on its row.
+    func testTerminalsWithNoReopenMechanismFallBackToTheGenericLadder() {
+        XCTAssertEqual(Jumper.openerOrder(preferring: "kitty"), ["iterm", "terminal", "warp"])
+        XCTAssertEqual(Jumper.openerOrder(preferring: "tmux"), ["iterm", "terminal", "warp"])
+        XCTAssertEqual(Jumper.openerOrder(preferring: "some-terminal-nobody-has-heard-of"), ["iterm", "terminal", "warp"])
         XCTAssertEqual(Jumper.openerOrder(preferring: nil), ["iterm", "terminal", "warp"])
     }
 

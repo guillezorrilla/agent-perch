@@ -46,10 +46,24 @@ struct RuntimeGeminiTokenSource: GeminiTokenSource {
         guard let data = try? Data(contentsOf: credentialsURL) else { return nil }
         return try? GeminiCredentialParser.credentials(from: data)
     }
+
+    func credentialAvailability() -> UsageAvailability {
+        CredentialFile.availability(of: credentialsURL) {
+            try? GeminiCredentialParser.credentials(from: $0)
+        }
+    }
 }
 
 protocol GeminiTokenSource: Sendable {
     func credentials() -> GeminiCredentials?
+    /// See `CodexTokenSource.credentialAvailability` — same distinction, same reason.
+    func credentialAvailability() -> UsageAvailability
+}
+
+extension GeminiTokenSource {
+    func credentialAvailability() -> UsageAvailability {
+        credentials() != nil ? .ready : .notConfigured
+    }
 }
 
 // MARK: - Eligibility
@@ -163,6 +177,12 @@ final class GeminiUsageSource: UsageSource, @unchecked Sendable {
     func isAvailable() -> Bool { tokenSource.credentials() != nil }
 
     func availability() async -> UsageAvailability {
+        // A credential file that exists but could not be read is a retryable row, not an absent
+        // provider. Everything below this line is about eligibility, which needs credentials in
+        // hand to judge.
+        if case .unavailable = tokenSource.credentialAvailability() {
+            return tokenSource.credentialAvailability()
+        }
         guard let credentials = tokenSource.credentials() else { return .notConfigured }
         // Token refresh is deliberately not implemented — see the note on `fetch()`. An expired
         // token is a provider we cannot serve, which is an omitted row, not an error row.

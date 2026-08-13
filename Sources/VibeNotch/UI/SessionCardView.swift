@@ -177,33 +177,6 @@ struct PermissionRequestCard: View {
     let onSelect: (Int) -> Void
     let onDecision: (ActionDecision) -> Void
 
-    /// The affirmative half of Claude Code's permission prompt, which has three options where this
-    /// card used to offer two (#61). Only "yes" is spelled the same for every tool; option 2 —
-    /// the one worth having, since it is the difference between answering one card and answering
-    /// ten — is worded per tool, so it is derived from the recorded tool name rather than guessed.
-    ///
-    /// Deny is NOT a third row here on purpose. Typing `3` assumes the prompt has exactly three
-    /// options, which is true for the tools above and not something this app can know in general;
-    /// Escape cancels whatever shape the prompt is. So the digits cover the two "yes" paths and
-    /// the proven Escape path stays where it was, unchanged and untouched by this.
-    static func affirmatives(forTool tool: String) -> [(label: String, description: String)] {
-        [
-            ("Yes", "Just this once"),
-            (rememberLabel(forTool: tool), "Stops this card coming back")
-        ]
-    }
-
-    private static func rememberLabel(forTool tool: String) -> String {
-        switch tool {
-        case "Edit", "MultiEdit", "Write", "NotebookEdit":
-            return "Yes, allow all edits this session"
-        case "Bash":
-            return "Yes, don't ask again for this command"
-        default:
-            return "Yes, and don't ask again"
-        }
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 11) {
             HStack(spacing: 7) {
@@ -247,7 +220,7 @@ struct PermissionRequestCard: View {
             }
 
             VStack(spacing: 6) {
-                ForEach(Array(Self.affirmatives(forTool: request.toolName).enumerated()), id: \.offset) { index, option in
+                ForEach(Array(PendingAction.permissionAffirmatives(forTool: request.toolName).enumerated()), id: \.offset) { index, option in
                     affirmativeButton(number: index + 1, option: option)
                 }
             }
@@ -319,22 +292,6 @@ struct PlanReviewCard: View {
     let markdown: String
     let onSelect: (Int) -> Void
 
-    /// Claude Code's own plan prompt, in its own order — the card exists to answer THAT prompt, and
-    /// ⌘1…⌘3 type the matching digit into it.
-    ///
-    /// Approve/Deny was not just incomplete, it was misleading: "Approve" typed a `1`, and `1` on
-    /// this prompt is *auto mode*, not the manual approval the button implied (#66). Naming the
-    /// three real choices is the only way the card can be honest about what it is about to send.
-    ///
-    /// Coupled to another app's wording by construction. The DIGITS are the contract — those have
-    /// been stable — and the labels are what the user reads before pressing one, so a wording drift
-    /// shows up as a stale label rather than a wrong keystroke.
-    static let options: [(label: String, description: String)] = [
-        ("Yes, and use auto mode", "Claude edits without asking again"),
-        ("Yes, manually approve edits", "Every edit still asks first"),
-        ("Tell Claude what to change", "Opens the session so you can type feedback")
-    ]
-
     var body: some View {
         VStack(alignment: .leading, spacing: 11) {
             HStack(spacing: 7) {
@@ -361,7 +318,7 @@ struct PlanReviewCard: View {
             .background(Color.vibePanel, in: RoundedRectangle(cornerRadius: 9))
 
             VStack(spacing: 6) {
-                ForEach(Self.options.indices, id: \.self) { index in
+                ForEach(PendingAction.planOptions.indices, id: \.self) { index in
                     optionButton(at: index)
                 }
             }
@@ -400,7 +357,7 @@ struct PlanReviewCard: View {
 
     private func optionButton(at index: Int) -> some View {
         let number = index + 1
-        let option = Self.options[index]
+        let option = PendingAction.planOptions[index]
         return Button { onSelect(number) } label: {
             HStack(alignment: .top, spacing: 10) {
                 Text("⌘\(number)")

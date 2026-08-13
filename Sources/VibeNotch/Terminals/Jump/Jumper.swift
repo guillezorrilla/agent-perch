@@ -21,32 +21,54 @@ enum JumpRung: Equatable, Sendable {
 final class Jumper: @unchecked Sendable {
     private let resolver = TTYResolver()
     private let terminalResolver = TerminalNameResolver.shared
-    private let appleScript = AppleScriptRunner()
+    private let appleScript: AppleScripting
+    /// Returns where an app bundle lives, or `nil` if it is not installed. A URL rather than a
+    /// `Bool` because Ghostty's reopen runs the CLI *inside* its bundle.
+    private let appURL: @Sendable (String) -> URL?
+    /// Launching a detached process — the reopen mechanism for every terminal that has a CLI
+    /// rather than a scripting dictionary, and for the workspace IDEs. Injected for the same
+    /// reason as `appleScript`: without it none of those paths can be asserted on.
+    private let launch: @Sendable (String, [String]) -> Bool
+    /// Handing a URL to LaunchServices — Warp's reopen mechanism. Injected so a test asserting the
+    /// reopen ladder does not actually open Warp on the machine running it.
+    private let openURL: @Sendable (URL) -> Bool
     private let warpTabLocator = WarpTabLocator()
     private let warpFocuser = WarpFocuser()
     private let processes: ProcessTableCache
     private static let log = Logger(subsystem: "dev.vibenotch", category: "jump")
 
-    init(processes: ProcessTableCache = .shared) {
+    init(
+        processes: ProcessTableCache = .shared,
+        appleScript: AppleScripting = AppleScriptRunner(),
+        appURL: @escaping @Sendable (String) -> URL? = {
+            NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0)
+        },
+        launch: @escaping @Sendable (String, [String]) -> Bool = { Jumper.runDetached($0, $1) },
+        openURL: @escaping @Sendable (URL) -> Bool = { NSWorkspace.shared.open($0) }
+    ) {
         self.processes = processes
+        self.appleScript = appleScript
+        self.appURL = appURL
+        self.launch = launch
+        self.openURL = openURL
     }
 
-    // Only iTerm2 and Terminal.app expose per-tab tty for exact focus. Warp uses its
-    // state database below; anything else can only be reopened at the cwd.
+    /// Only iTerm2 and Terminal.app expose per-tab tty to AppleScript, so only they can be focused
+    /// by the tty ladder. An unknown terminal keeps the original benefit of the doubt.
+    ///
+    /// Derived from `TerminalRegistry` rather than restated: this was one of six independent
+    /// tables keyed on the same string, and the one that made WezTerm — which *is* tty-exact, via
+    /// its own CLI — look like an oversight rather than a different scripting interface.
     static func canExactFocus(_ terminal: String?) -> Bool {
-        switch terminal {
-        case nil, "iterm", "iterm2", "terminal", "terminal.app": return true
-        default: return false
-        }
+        guard let capability = TerminalRegistry.capability(for: terminal) else { return terminal == nil }
+        return capability.isAppleScriptTTYFocusable
     }
 
-    // Reopen candidates, preferred terminal first so a session's own terminal wins.
+    /// Reopen candidates, the session's own terminal first. See `TerminalRegistry.openerOrder` —
+    /// the version this replaced silently dropped any terminal that was not already one of the
+    /// three generic openers, which is how a Ghostty session came to reopen in iTerm.
     static func openerOrder(preferring terminal: String?) -> [String] {
-        let defaults = ["iterm", "terminal", "warp"]
-        guard let terminal else { return defaults }
-        let key = terminal == "iterm2" ? "iterm" : (terminal == "terminal.app" ? "terminal" : terminal)
-        guard defaults.contains(key) else { return defaults }
-        return [key] + defaults.filter { $0 != key }
+        TerminalRegistry.openerOrder(preferring: terminal).map(\.key)
     }
 
     static func rung(for cwd: String, processes: [ClaudeProcess]) -> JumpRung {
@@ -274,7 +296,7 @@ final class Jumper: @unchecked Sendable {
     /// The main-actor half: one AppleScript or one keystroke, with the same fallback to a new tab
     /// the ladder always had when the tab it was told about turns out not to be there.
     @MainActor
-    private func perform(_ plan: JumpPlan) -> Bool {
+    func perform(_ plan: JumpPlan) -> Bool {
         switch plan.target {
         case let .focusTTY(tty):
             if focus(tty: tty) { return true }
@@ -292,7 +314,7 @@ final class Jumper: @unchecked Sendable {
             let (executable, arguments) = Self.workspaceIDELaunchCommand(
                 ide, path: path, cliAvailable: cliAvailable
             )
-            return Self.runDetached(executable, arguments)
+            return launch(executable, arguments)
         case .alreadyFocused:
             return true
         case .newTab:
@@ -320,7 +342,7 @@ final class Jumper: @unchecked Sendable {
     /// every other opener above (the AppleScript `create window`/`do script` calls don't wait for
     /// the terminal to finish drawing either) — only whether the launch itself was accepted.
     @discardableResult
-    private static func runDetached(_ executable: String, _ arguments: [String]) -> Bool {
+    static func runDetached(_ executable: String, _ arguments: [String]) -> Bool {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
@@ -456,51 +478,115 @@ final class Jumper: @unchecked Sendable {
             Self.newTabShellCommand(cwd: cwd, resumeCommand: resumeCommand)
         )
 
-        for opener in Self.openerOrder(preferring: terminal) {
-            switch opener {
-            case "iterm":
-                if isInstalled("com.googlecode.iterm2"), appleScript.run("""
-                    tell application id "com.googlecode.iterm2"
-                        create window with default profile command "\(shellWrapped)"
-                        activate
-                    end tell
-                    return true
-                    """) {
-                    return true
-                }
-            case "terminal":
-                if isInstalled("com.apple.Terminal"), appleScript.run("""
-                    tell application "Terminal"
-                        do script "\(command)"
-                        activate
-                    end tell
-                    return true
-                    """) {
-                    return true
-                }
-            case "warp":
-                if isInstalled("dev.warp.Warp-Stable", "dev.warp.Warp") {
-                    var components = URLComponents()
-                    components.scheme = "warp"
-                    components.host = "action"
-                    components.path = "/new_tab"
-                    components.queryItems = [URLQueryItem(name: "path", value: cwd)]
-                    if let url = components.url {
-                        NSWorkspace.shared.open(url)
-                        return true
-                    }
-                }
-            default:
-                break
+        for capability in TerminalRegistry.openerOrder(preferring: terminal) {
+            if reopen(
+                capability,
+                cwd: cwd,
+                command: command,
+                shellWrapped: shellWrapped,
+                resumeCommand: resumeCommand
+            ) {
+                return true
             }
         }
         return false
     }
 
+    /// One arm per reopen strategy. The switch is exhaustive with no `default:`, so a terminal
+    /// added to `TerminalRegistry` with a mechanism nobody implemented is a build failure — which
+    /// is the whole point. The version this replaced keyed on a bare string and simply skipped
+    /// anything it did not recognise, which is how a Ghostty session came to reopen in iTerm.
+    @MainActor
+    private func reopen(
+        _ capability: TerminalCapability,
+        cwd: String,
+        command: String,
+        shellWrapped: String,
+        resumeCommand: String?
+    ) -> Bool {
+        switch capability.reopen {
+        case .iTermAppleScript:
+            guard isInstalled(capability.bundleIdentifiers) else { return false }
+            return appleScript.run("""
+                tell application id "com.googlecode.iterm2"
+                    create window with default profile command "\(shellWrapped)"
+                    activate
+                end tell
+                return true
+                """)
+
+        case .terminalAppleScript:
+            guard isInstalled(capability.bundleIdentifiers) else { return false }
+            return appleScript.run("""
+                tell application "Terminal"
+                    do script "\(command)"
+                    activate
+                end tell
+                return true
+                """)
+
+        case .warpURLScheme:
+            guard isInstalled(capability.bundleIdentifiers) else { return false }
+            var components = URLComponents()
+            components.scheme = "warp"
+            components.host = "action"
+            components.path = "/new_tab"
+            components.queryItems = [URLQueryItem(name: "path", value: cwd)]
+            guard let url = components.url else { return false }
+            return openURL(url)
+
+        case .ghosttyBundledCLI:
+            // `ghostty +new-window` opens in the ALREADY-RUNNING instance and documents
+            // `--working-directory`, `--command` and `-e`. `-e` swallows every following
+            // argument as the command, so it goes last. Arguments are passed as an array, so
+            // nothing here needs shell quoting.
+            guard let bundle = installedBundle(capability) else { return false }
+            var arguments = ["+new-window", "--working-directory=\(cwd)"]
+            if let resumeCommand {
+                arguments += ["-e", "/bin/zsh", "-lc", Self.newTabInnerCommand(cwd: cwd, resumeCommand: resumeCommand)]
+            }
+            return launch(
+                bundle.appendingPathComponent("Contents/MacOS/ghostty").path,
+                arguments
+            )
+
+        case .wezTermCLI:
+            // The CLI inside the bundle, NOT `/usr/bin/env wezterm`. `runDetached` reports whether
+            // the launch was accepted, and `env` always launches — it exits 127 for a missing
+            // command long after we have said "handled" and stopped the ladder. Addressing the
+            // binary directly makes a missing WezTerm a failed `run()`, so the ladder carries on
+            // exactly as it did before WezTerm had a reopen arm at all.
+            guard let bundle = installedBundle(capability) else { return false }
+            var arguments = ["start", "--cwd", cwd]
+            if let resumeCommand {
+                arguments += ["--", "/bin/zsh", "-lc", Self.newTabInnerCommand(cwd: cwd, resumeCommand: resumeCommand)]
+            }
+            return launch(bundle.appendingPathComponent("Contents/MacOS/wezterm").path, arguments)
+
+        case .activateApp:
+            // No new-window mechanism, but surfacing the app the session actually lives in beats
+            // opening a different vendor's terminal.
+            return CmuxLauncher.activate()
+
+        case .unsupported:
+            return false
+        }
+    }
+
     @MainActor
     private func isInstalled(_ bundleIdentifiers: String...) -> Bool {
-        bundleIdentifiers.contains {
-            NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) != nil
-        }
+        isInstalled(bundleIdentifiers)
+    }
+
+    @MainActor
+    private func isInstalled(_ bundleIdentifiers: [String]) -> Bool {
+        bundleIdentifiers.contains { appURL($0) != nil }
+    }
+
+    /// Where an installed terminal's bundle lives, taking the first identifier that resolves —
+    /// Warp ships under two.
+    @MainActor
+    private func installedBundle(_ capability: TerminalCapability) -> URL? {
+        capability.bundleIdentifiers.lazy.compactMap { self.appURL($0) }.first
     }
 }
