@@ -1,8 +1,8 @@
 #!/usr/bin/env swift
 //
-// Builds Support/VibeNotch.icns from a single square source PNG.
+// Builds Support/AgentPerch.icns from a single square source PNG.
 //
-//   ./scripts/make-icon.swift Support/AppIcon-source.png Support/VibeNotch.icns
+//   ./scripts/make-icon.swift Support/AppIcon-source.png Support/AgentPerch.icns
 //
 // Exists because the two things this needs — an alpha-masked rounded rect and a set of
 // downscales — are exactly what `sips` cannot do, and pulling in ImageMagick to crop a
@@ -85,7 +85,7 @@ func render(canvas: Int) -> CGImage? {
 }
 
 let iconset = outputURL.deletingLastPathComponent()
-    .appendingPathComponent("VibeNotch.iconset", isDirectory: true)
+    .appendingPathComponent("AgentPerch.iconset", isDirectory: true)
 try? FileManager.default.removeItem(at: iconset)
 try FileManager.default.createDirectory(at: iconset, withIntermediateDirectories: true)
 

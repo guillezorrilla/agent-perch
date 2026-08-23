@@ -1,18 +1,18 @@
-APP := VibeNotch.app
+APP := AgentPerch.app
 SWIFT ?= swift
 SWIFT_FLAGS ?=
 # Committed rather than generated at build time: it is derived from artwork, not from code,
 # so rebuilding it on every `make app` would be work that can only produce the same bytes.
 # Regenerate with `make icon` after replacing Support/AppIcon-source.png.
-ICON := Support/VibeNotch.icns
+ICON := Support/AgentPerch.icns
 
 # A STABLE signing identity keeps the Accessibility grant (needed for Warp tab focus)
 # across rebuilds — ad-hoc (`-`) changes every build and macOS revokes the grant each
-# time. Prefer an existing "Apple Development" identity, else a self-signed "VibeNotch"
+# time. Prefer an existing "Apple Development" identity, else a self-signed "AgentPerch"
 # cert if present, else fall back to ad-hoc. Override with `make app SIGN_ID="..."`.
 SIGN_ID ?= $(shell security find-identity -v -p codesigning 2>/dev/null | awk -F'"' '/Apple Development/ {print $$2; exit}')
 ifeq ($(strip $(SIGN_ID)),)
-SIGN_ID := $(shell security find-identity -v -p codesigning 2>/dev/null | awk -F'"' '/VibeNotch/ {print $$2; exit}')
+SIGN_ID := $(shell security find-identity -v -p codesigning 2>/dev/null | awk -F'"' '/AgentPerch/ {print $$2; exit}')
 endif
 ifeq ($(strip $(SIGN_ID)),)
 SIGN_ID := -
@@ -20,21 +20,21 @@ endif
 
 # Distribution identity, NEVER guessed. `SIGN_ID` above falls back happily, which is right
 # for a local build and catastrophic for a release: an "Apple Development" cert signs a DMG
-# without complaint and then fails Gatekeeper on every Mac except this one, with "VibeNotch
+# without complaint and then fails Gatekeeper on every Mac except this one, with "AgentPerch
 # is damaged and can't be opened" — which reads as a corrupt download rather than a signing
 # mistake, so nobody reports it (#74). Both of these are therefore required, not defaulted:
 #
-#   make dmg DEVELOPER_ID="Developer ID Application: Your Name (TEAMID)" NOTARY_PROFILE=vibenotch
+#   make dmg DEVELOPER_ID="Developer ID Application: Your Name (TEAMID)" NOTARY_PROFILE=agentperch
 #
 # The notary profile is created once with:
 #
-#   xcrun notarytool store-credentials vibenotch --apple-id … --team-id … --password <app-specific>
+#   xcrun notarytool store-credentials agentperch --apple-id … --team-id … --password <app-specific>
 DEVELOPER_ID ?=
 NOTARY_PROFILE ?=
 
 VERSION := $(shell /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" Support/Info.plist)
 STAGE := dist/stage
-DMG := dist/VibeNotch-$(VERSION).dmg
+DMG := dist/AgentPerch-$(VERSION).dmg
 
 .PHONY: app run dmg icon
 
@@ -54,11 +54,11 @@ icon:
 app:
 	$(SWIFT) build -c release $(SWIFT_FLAGS)
 	mkdir -p "$(APP)/Contents/MacOS"
-	rm -f -- "$(APP)/Contents/MacOS/VibeNotch"
-	cp ".build/release/VibeNotch" "$(APP)/Contents/MacOS/VibeNotch"
+	rm -f -- "$(APP)/Contents/MacOS/AgentPerch"
+	cp ".build/release/AgentPerch" "$(APP)/Contents/MacOS/AgentPerch"
 	cp "Support/Info.plist" "$(APP)/Contents/Info.plist"
 	mkdir -p "$(APP)/Contents/Resources"
-	cp "$(ICON)" "$(APP)/Contents/Resources/VibeNotch.icns"
+	cp "$(ICON)" "$(APP)/Contents/Resources/AgentPerch.icns"
 	@echo "Signing with identity: $(SIGN_ID)"
 	codesign --force -s "$(SIGN_ID)" "$(APP)"
 
@@ -85,11 +85,11 @@ dmg:
 	@# `--verify --strict` then rejects the bundle with "code has no resources but signature
 	@# indicates they must be present". Notarization applies the same strictness.
 	mkdir -p "$(STAGE)/$(APP)/Contents/Resources"
-	cp ".build/release/VibeNotch" "$(STAGE)/$(APP)/Contents/MacOS/VibeNotch"
+	cp ".build/release/AgentPerch" "$(STAGE)/$(APP)/Contents/MacOS/AgentPerch"
 	cp "Support/Info.plist" "$(STAGE)/$(APP)/Contents/Info.plist"
-	cp "$(ICON)" "$(STAGE)/$(APP)/Contents/Resources/VibeNotch.icns"
+	cp "$(ICON)" "$(STAGE)/$(APP)/Contents/Resources/AgentPerch.icns"
 	codesign --force --options runtime --timestamp \
-		--entitlements "Support/VibeNotch.entitlements" \
+		--entitlements "Support/AgentPerch.entitlements" \
 		-s "$(DEVELOPER_ID)" "$(STAGE)/$(APP)"
 	codesign --verify --strict --verbose=2 "$(STAGE)/$(APP)"
 	@# codesign PRINTS a parse error for a bad entitlements file and then exits 0, signing
@@ -100,11 +100,11 @@ dmg:
 	@codesign -d --entitlements - "$(STAGE)/$(APP)" 2>&1 | grep -q "apple-events" \
 		|| { echo "error: the apple-events entitlement is missing from the signature — every scripted jump and answer would fail silently."; exit 1; }
 	ln -s /Applications "$(STAGE)/Applications"
-	hdiutil create -volname VibeNotch -srcfolder "$(STAGE)" -ov -format UDZO "$(DMG)"
+	hdiutil create -volname AgentPerch -srcfolder "$(STAGE)" -ov -format UDZO "$(DMG)"
 	codesign --force --timestamp -s "$(DEVELOPER_ID)" "$(DMG)"
 	xcrun notarytool submit "$(DMG)" --keychain-profile "$(NOTARY_PROFILE)" --wait
 	xcrun stapler staple "$(DMG)"
 	@echo
 	@echo "$(DMG) is signed, notarized and stapled."
-	@echo "Verify it on a Mac that has NEVER run VibeNotch — quarantine is only set on downloaded"
+	@echo "Verify it on a Mac that has NEVER run AgentPerch — quarantine is only set on downloaded"
 	@echo "files, so a machine where it already ran proves nothing."

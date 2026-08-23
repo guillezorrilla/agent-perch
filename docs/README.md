@@ -7,7 +7,7 @@ python3 scripts/make-readme-art.py
 ```
 
 The wallpaper is ours -- a field of the app's own invader at texture opacity, with a brand-green glow behind the notch -- and every name in them is invented. They are **vector reproductions of the real UI, not screenshots.** Every colour
-and the invader sprite are copied from `Sources/VibeNotch/UI/InvaderGlyph.swift`,
+and the invader sprite are copied from `Sources/AgentPerch/UI/InvaderGlyph.swift`,
 so they are accurate — but if the palette or a card layout changes there, change
 it in the generator and re-run, or they will quietly drift.
 

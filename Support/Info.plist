@@ -5,17 +5,17 @@
     <key>CFBundleDevelopmentRegion</key>
     <string>en</string>
     <key>CFBundleDisplayName</key>
-    <string>VibeNotch</string>
+    <string>AgentPerch</string>
     <key>CFBundleExecutable</key>
-    <string>VibeNotch</string>
+    <string>AgentPerch</string>
     <key>CFBundleIconFile</key>
-    <string>VibeNotch</string>
+    <string>AgentPerch</string>
     <key>CFBundleIdentifier</key>
-    <string>com.gzorrilla.vibenotch</string>
+    <string>com.gzorrilla.agentperch</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>VibeNotch</string>
+    <string>AgentPerch</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -27,6 +27,6 @@
     <key>LSUIElement</key>
     <true/>
     <key>NSAppleEventsUsageDescription</key>
-    <string>VibeNotch controls your terminal to jump to agent sessions.</string>
+    <string>AgentPerch controls your terminal to jump to agent sessions.</string>
 </dict>
 </plist>

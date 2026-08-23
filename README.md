@@ -1,6 +1,6 @@
 <div align="center">
 
-# VibeNotch
+# AgentPerch
 
 ### Your AI agents live in the notch now.
 
@@ -8,7 +8,7 @@
 
 *Native Swift. No dock icon. No menu bar clutter. No account, no telemetry, no cost.*
 
-<img src="docs/hero.svg" alt="The VibeNotch panel: a usage strip, two live session cards and two compact rows" width="740">
+<img src="docs/hero.svg" alt="The AgentPerch panel: a usage strip, two live session cards and two compact rows" width="740">
 
 </div>
 
@@ -18,7 +18,7 @@
 
 You have five terminal tabs open. Two agents are working, one is waiting on a permission prompt, one finished four minutes ago, and one is stuck on a question you never saw. You find out by cycling through tabs.
 
-VibeNotch puts all of them in the notch. Hover to see them. Answer from there.
+AgentPerch puts all of them in the notch. Hover to see them. Answer from there.
 
 **The rule the whole app is built on: a card never claims something it hasn't verified.** A spinner means a turn is genuinely in flight — confirmed by a hook, not guessed from a file timestamp. A green dot means a process is actually running. If a session died, its card says so and then leaves. It is very easy to build a panel that looks alive; this one tries hard to be honest instead.
 
@@ -58,11 +58,11 @@ Click any card and the terminal running it comes to the front — the right wind
 
 Requires **macOS 14+** on Apple Silicon.
 
-### **[Download VibeNotch.dmg →](https://github.com/guillezorrilla/vibe-notch/releases/latest)**
+### **[Download AgentPerch.dmg →](https://github.com/guillezorrilla/agent-perch/releases/latest)**
 
-Open it, drag VibeNotch to Applications, launch it. The build is signed and notarized, so there's no right-click dance and no "damaged and can't be opened".
+Open it, drag AgentPerch to Applications, launch it. The build is signed and notarized, so there's no right-click dance and no "damaged and can't be opened".
 
-That's it. There's no installer and no dock icon — VibeNotch lives in the notch. Quit it from **Settings → Quit**.
+That's it. There's no installer and no dock icon — AgentPerch lives in the notch. Quit it from **Settings → Quit**.
 
 <details>
 <summary>Or build it yourself</summary>
@@ -70,10 +70,10 @@ That's it. There's no installer and no dock icon — VibeNotch lives in the notc
 Needs Xcode and a Swift 6 toolchain.
 
 ```sh
-git clone https://github.com/guillezorrilla/vibe-notch.git
-cd vibe-notch
+git clone https://github.com/guillezorrilla/agent-perch.git
+cd agent-perch
 make app
-open VibeNotch.app
+open AgentPerch.app
 ```
 
 </details>
@@ -85,7 +85,7 @@ On first launch macOS will ask for two things:
 | **Accessibility** | To type your answer into the terminal for you |
 | **Access data from other apps** | To read Warp's tab list, so a jump lands on the right tab |
 
-Both are optional. Decline them and VibeNotch still shows everything — it just opens a fresh tab instead of focusing an exact one, and you answer prompts by hand.
+Both are optional. Decline them and AgentPerch still shows everything — it just opens a fresh tab instead of focusing an exact one, and you answer prompts by hand.
 
 ### Live status for Claude Code
 
@@ -142,7 +142,7 @@ Shortcuts work anywhere: the panel doesn't need focus, and neither does the term
 ```sh
 swift build          # debug
 swift test           # 730 tests
-make app             # assemble VibeNotch.app (release, signed)
+make app             # assemble AgentPerch.app (release, signed)
 ```
 
 `make app` signs with a stable Apple Development identity if you have one, so macOS keeps your Accessibility grant between builds. It updates the bundle in place for the same reason — deleting and recreating the `.app` throws those grants away.
