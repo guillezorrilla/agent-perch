@@ -3,7 +3,7 @@
 ## Reporting
 
 Please report vulnerabilities privately through
-[GitHub's advisory form](https://github.com/guillezorrilla/vibe-notch/security/advisories/new)
+[GitHub's advisory form](https://github.com/guillezorrilla/agent-perch/security/advisories/new)
 rather than opening a public issue.
 
 ## What this app touches

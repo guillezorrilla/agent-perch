@@ -107,7 +107,7 @@ jobs:
       - name: Store notary credentials
         run: |
           set -euo pipefail
-          xcrun notarytool store-credentials vibenotch \
+          xcrun notarytool store-credentials agentperch \
             --apple-id "${{ secrets.APPLE_ID }}" \
             --team-id "${{ secrets.APPLE_TEAM_ID }}" \
             --password "${{ secrets.APPLE_APP_PASSWORD }}" \
@@ -122,21 +122,21 @@ jobs:
             | awk -F'"' '/Developer ID Application/ {print $2; exit}')"
           test -n "$IDENTITY" || { echo "error: no Developer ID Application identity in the keychain — check DEVELOPER_ID_P12 and its password."; exit 1; }
           echo "Signing as: $IDENTITY"
-          make dmg DEVELOPER_ID="$IDENTITY" NOTARY_PROFILE=vibenotch
+          make dmg DEVELOPER_ID="$IDENTITY" NOTARY_PROFILE=agentperch
 
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          DMG="dist/VibeNotch-$VERSION.dmg"
+          DMG="dist/AgentPerch-$VERSION.dmg"
           SHA="$(shasum -a 256 "$DMG" | awk '{print $1}')"
           # Two paths because a tag can arrive either way: pushed on its own, or created by
           # someone drafting the release in the UI first.
-          gh release create "$TAG" "$DMG" --generate-notes --title "VibeNotch $VERSION" \
+          gh release create "$TAG" "$DMG" --generate-notes --title "AgentPerch $VERSION" \
             || gh release upload "$TAG" "$DMG" --clobber
           {
-            echo "### VibeNotch $VERSION"
+            echo "### AgentPerch $VERSION"
             echo
             echo '```'
             echo "$SHA  $(basename "$DMG")"

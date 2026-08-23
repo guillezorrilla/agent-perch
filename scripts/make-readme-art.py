@@ -2,7 +2,7 @@
 """Generates the README artwork as SVG.
 
 These are vector reproductions of the real UI, not screenshots. Every colour and
-the invader sprite are copied from Sources/VibeNotch/UI/InvaderGlyph.swift, so if
+the invader sprite are copied from Sources/AgentPerch/UI/InvaderGlyph.swift, so if
 the palette changes there, change it here and re-run:
 
     python3 scripts/make-readme-art.py
@@ -215,10 +215,10 @@ def menu_bar(x, y, w):
     out = []
     out.append(f'<circle cx="{x + 14}" cy="{y + 12}" r="5" fill="#E8E8ED" opacity="0.92"/>')
     out.append(f'<rect x="{x + 12}" y="{y + 3}" width="4" height="5" rx="2" fill="#1A1830"/>')
-    out.append(text(x + 32, y + 16, "VibeNotch", size="11.5", fill="#F2F2F5", weight="600"))
+    out.append(text(x + 32, y + 16, "AgentPerch", size="11.5", fill="#F2F2F5", weight="600"))
     # Only what fits clear of the panel: a menu title sliced in half reads as a rendering bug.
     for i, m in enumerate(["File", "Edit"]):
-        out.append(text(x + 100 + i * 44, y + 16, m, size="11.5", fill="#DCDCE2"))
+        out.append(text(x + 112 + i * 44, y + 16, m, size="11.5", fill="#DCDCE2"))
     rx = x + w
     out.append(text(rx - 12, y + 16, "Tue 9:41", size="11.5", fill="#F2F2F5", anchor="end"))
     out.append(f'<rect x="{rx - 96}" y="{y + 6}" width="19" height="10" rx="3" fill="none" '

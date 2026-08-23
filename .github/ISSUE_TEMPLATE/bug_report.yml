@@ -22,7 +22,7 @@ body:
       label: Logs
       description: |
         Often decisive, and cheap to get:
-        `log stream --predicate 'subsystem == "dev.vibenotch"' --level debug --style compact`
+        `log stream --predicate 'subsystem == "dev.agentperch"' --level debug --style compact`
         Categories: jump, answer, hover, usage-credentials.
       render: shell
   - type: input
